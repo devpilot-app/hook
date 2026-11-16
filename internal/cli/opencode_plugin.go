@@ -3,11 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/twotwoba/DevPilot-Hook/internal/agent"
 )
 
 // openCodePluginVersion 是插件文件协议版本；升级插件内容时递增，
 // uninstall/doctor 据此识别自家文件。
-const openCodePluginVersion = 2
+const openCodePluginVersion = 3
 
 // openCodePluginMarker 是插件文件的身份标记（首行注释），uninstall
 // 只删除带标记的文件，绝不碰用户自己的插件。
@@ -77,6 +80,16 @@ func openCodePluginSource(v openCodeVariant, exe string) string {
 	if v == openCodeV2 {
 		body = openCodePluginV2Body
 	}
+	// v2 的 deny 兜底文案注入 agent.DenyFallbackMessage——插件与三个 CLI
+	// 适配器共用一份常量，改措辞只落一处。用 token 替换而非 Sprintf：模板
+	// 花括号密集，额外 % 占位符容易被后续文案误伤；v1 模板无此 token，
+	// 替换是 no-op。
+	quotedDeny, err := json.Marshal(agent.DenyFallbackMessage)
+	if err != nil {
+		// string 的 Marshal 恒成功；防御分支走 fallback。
+		quotedDeny = []byte(`"Denied from phone"`)
+	}
+	body = strings.ReplaceAll(body, "__DENY_FALLBACK__", string(quotedDeny))
 	return fmt.Sprintf(`// %s v%d — do not edit.
 // Reinstall: devpilot-hook install --agent opencode
 // Remove:    devpilot-hook uninstall --agent opencode
@@ -177,6 +190,10 @@ export const DevPilotHook = async ({ directory }) => {
   // 项目路径，审批卡与收件箱路由靠它）；插件启动目录兜底。
   const sessions = new Map();
   const started = new Set();
+  // calls 缓存 callID → 工具实参：0.x 的 tool.execute.after 事件不带实参
+  // （output 只有 title/output/metadata），PostToolUse 的 tool_input 靠
+  // before 存、after 取；读完即删，Map 不随调用数增长。
+  const calls = new Map();
   const fallbackCwd = directory || "";
   const remember = (sid, cwd, title) => {
     if (!sid) return;
@@ -234,6 +251,7 @@ export const DevPilotHook = async ({ directory }) => {
       try {
         const sid = input.sessionID || "";
         await ensureStarted(sid, "");
+        if (input.callID) calls.set(input.callID, (output && output.args) || {});
         await callHook({
           hook_event_name: "PreToolUse",
           session_id: sid,
@@ -248,12 +266,16 @@ export const DevPilotHook = async ({ directory }) => {
       try {
         const sid = input.sessionID || "";
         await ensureStarted(sid, "");
+        // after 事件不带工具实参，取 before 缓存的同一 callID；读不到
+        // （插件半路重载）回落空对象，PostToolUse 仍照发。
+        const args = (input.callID && calls.get(input.callID)) || {};
+        if (input.callID) calls.delete(input.callID);
         await callHook({
           hook_event_name: "PostToolUse",
           session_id: sid,
           tool_name: input.tool || "",
           tool_use_id: input.callID || "",
-          tool_input: (input && input.args) || {},
+          tool_input: args,
           cwd: cwdOf(sid, ""),
         }, TELEMETRY_TIMEOUT_MS);
       } catch {}
@@ -405,7 +427,10 @@ const DevPilotHook = {
           event.effect = "allow";
         } else if (decision && decision.decision === "deny") {
           event.effect = "deny";
-          event.message = decision.message || "Denied from phone";
+          // 兜底文案由 Go 侧注入（agent.DenyFallbackMessage），常量与
+          // CLI 适配器同源，见 openCodePluginSource。token 裸写不带引号，
+          // 注入的是完整 JS 字符串字面量。
+          event.message = decision.message || __DENY_FALLBACK__;
         }
         // 其余一切保持 "ask"：OpenCode 弹原生权限对话框。
       } catch {}

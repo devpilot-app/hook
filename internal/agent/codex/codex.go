@@ -63,11 +63,9 @@ func (Adapter) RenderDecision(hookEvent string, d wire.DecisionKind, choice, _ s
 	reason := "Approved from phone"
 	if d == wire.DecisionDeny {
 		decision = "deny"
-		reason = "Denied from phone"
-		if choice != "" {
-			reason = "The user has already answered this question from their phone. " +
-				"Their answer is: \"" + choice + "\". Treat it as the user's final choice and proceed accordingly without asking again."
-		}
+		// 理由文案与 claude/opencode 适配器共用一份（agent.DenyReason）；
+		// choice 是防御位，语义见函数注释。
+		reason = agent.DenyReason(choice)
 	}
 	event := hookEvent
 	if event == "" || event == "PermissionRequest" {

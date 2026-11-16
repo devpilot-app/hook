@@ -87,16 +87,8 @@ func (Adapter) Normalize(in agent.Input, daemonID string, now int64, mode config
 // Claude 通道一致，防御 App 侧未来扩展。
 func (Adapter) RenderDecision(hookEvent string, d wire.DecisionKind, choice, toolName string, toolInput json.RawMessage) ([]byte, error) {
 	if d == wire.DecisionDeny {
-		return json.Marshal(map[string]any{"decision": "deny", "message": denyReason(choice)})
+		// 理由文案与 claude/codex 适配器共用一份（agent.DenyReason）。
+		return json.Marshal(map[string]any{"decision": "deny", "message": agent.DenyReason(choice)})
 	}
 	return json.Marshal(map[string]any{"decision": "allow"})
-}
-
-// denyReason 生成 deny 的 message；选项作答时把标签原样喂回。
-func denyReason(choice string) string {
-	if choice == "" {
-		return "Denied from phone"
-	}
-	return "The user has already answered this question from their phone. " +
-		"Their answer is: \"" + choice + "\". Treat it as the user's final choice and proceed accordingly without asking again."
 }

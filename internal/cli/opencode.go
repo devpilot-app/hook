@@ -165,6 +165,11 @@ func isManagedOpenCodePlugin(data []byte) bool {
 // 旧实现的自家文件，避免 OpenCode 加载到错误格式（2.x 对 v1 插件会打
 // failed to load 警告）。只覆盖自家文件：目标已存在且不带标记时拒绝写入。
 // 内容不变时返回 changed=false（幂等）。
+//
+// 残留清理是尽力而为：自家目标文件此刻已写入/已最新，清理失败（权限锁定、
+// 并发删除竞态）不作为安装错误返回——否则 install_cmd 会把一次成功的安装
+// 报成 "failed to install" 退出 1，serve 自愈每次启动重放同一警告。残留的
+// 代际不符 / legacy 文件由 doctor 兜底暴露给用户。
 func installOpenCodePlugin(exe string) (changed bool, v openCodeVariant, path string, err error) {
 	v, _, _ = detectOpenCodeVariant()
 	path, err = openCodePluginPath(v)
@@ -172,19 +177,22 @@ func installOpenCodePlugin(exe string) (changed bool, v openCodeVariant, path st
 		return false, v, "", err
 	}
 	source := openCodePluginSource(v, exe)
+	cleanup := func() { _ = removeOtherOpenCodePlugins(path) }
 	if original, readErr := os.ReadFile(path); readErr == nil {
 		if !isManagedOpenCodePlugin(original) {
 			return false, v, path, fmt.Errorf("%s exists and is not a devpilot-hook managed plugin; refusing to overwrite", path)
 		}
 		if strings.TrimSpace(string(original)) == strings.TrimSpace(source) {
 			// 内容已最新；仍清理另一代际的残留（版本升级场景）。
-			return false, v, path, removeOtherOpenCodePlugins(path)
+			cleanup()
+			return false, v, path, nil
 		}
 	}
 	if err := config.WriteAtomic(path, []byte(source), 0o644); err != nil {
 		return false, v, path, err
 	}
-	return true, v, path, removeOtherOpenCodePlugins(path)
+	cleanup()
+	return true, v, path, nil
 }
 
 // removeOtherOpenCodePlugins 删除 keep 之外、带自家标记的插件文件。

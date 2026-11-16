@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/twotwoba/DevPilot-Hook/internal/agent"
 )
 
 // openCodeTestEnv 把 XDG_CONFIG_HOME 指到临时目录，并放一个假的
@@ -301,6 +303,81 @@ func TestInspectOpenCodePluginReportsMismatch(t *testing.T) {
 	}
 	if res := checkOpenCodePlugin(); res.Status != "warn" {
 		t.Fatalf("代际不符应 warn，实际 %+v", res)
+	}
+}
+
+// TestOpenCodePluginV1PostToolUseCarriesArgs 0.x 的 tool.execute.after 事件
+// 不带工具实参（output 只有 title/output/metadata），PostToolUse 的
+// tool_input 必须取 before 缓存的同一 callID——读 input.args 恒得空对象，
+// 遥测里的已执行命令详情会整体丢失。
+func TestOpenCodePluginV1PostToolUseCarriesArgs(t *testing.T) {
+	openCodeTestEnv(t, "0.14.3")
+	source := openCodePluginSource(openCodeV1, "/bin/devpilot-hook")
+	if !strings.Contains(source, "calls.set(input.callID") {
+		t.Fatal("v1 before 钩子应缓存工具实参")
+	}
+	if !strings.Contains(source, "calls.get(input.callID)") {
+		t.Fatal("v1 after 钩子应复用 before 缓存的实参")
+	}
+	if strings.Contains(source, "input && input.args") {
+		t.Fatal("after 事件没有 input.args，读它恒得空对象")
+	}
+}
+
+// TestOpenCodePluginV2SharesDenyFallback v2 插件的 deny 兜底文案由 Go 侧
+// 注入 agent.DenyFallbackMessage——插件与三个 CLI 适配器共用一份常量，
+// 模板里不允许出现未替换的 token。
+func TestOpenCodePluginV2SharesDenyFallback(t *testing.T) {
+	openCodeTestEnv(t, "opencode v2.2.6")
+	source := openCodePluginSource(openCodeV2, "/bin/devpilot-hook")
+	if !strings.Contains(source, agent.DenyFallbackMessage) {
+		t.Fatal("v2 插件应注入共享兜底文案")
+	}
+	if strings.Contains(source, "__DENY_FALLBACK__") {
+		t.Fatal("兜底文案 token 未被替换")
+	}
+}
+
+// TestInstallOpenCodeSucceedsWhenStaleCleanupFails 残留清理失败不算安装
+// 失败：目标文件已写入/已最新时 install 仍应成功（此前会把成功安装报成
+// "failed to install" 退出 1，serve 自愈每次启动重放同一警告）。残留由
+// doctor 的代际/legacy 检查兜底可见。
+func TestInstallOpenCodeSucceedsWhenStaleCleanupFails(t *testing.T) {
+	openCodeTestEnv(t, "0.14.3")
+	legacy, _ := openCodeLegacyPluginPath()
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("// "+openCodePluginMarker+" v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 锁死 legacy 所在目录：目录不可写时 unlink 恒 EACCES（模拟权限锁定）。
+	pluginsDir := filepath.Dir(legacy)
+	if err := os.Chmod(pluginsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// 先恢复目录权限再让 TempDir 自清（t.Cleanup 后进先出）。
+	t.Cleanup(func() { _ = os.Chmod(pluginsDir, 0o755) })
+
+	// 首装路径：v1 文件写入成功即算成功，残留清理失败不外溢。
+	changed, variant, _, err := installOpenCodePlugin("/bin/devpilot-hook")
+	if err != nil {
+		t.Fatalf("清理失败不应使安装报错: %v", err)
+	}
+	if !changed || variant != openCodeV1 {
+		t.Fatalf("首装应 changed=true/v1，实际 changed=%v variant=%s", changed, variant)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatal("锁定目录里的残留文件应原样保留（供 doctor 上报）")
+	}
+
+	// 幂等路径（内容已最新 + 清理失败）同样成功。
+	changed, _, _, err = installOpenCodePlugin("/bin/devpilot-hook")
+	if err != nil || changed {
+		t.Fatalf("up-to-date + 清理失败应 (false,nil)，实际 (%v,%v)", changed, err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatal("残留文件应仍保留")
 	}
 }
 

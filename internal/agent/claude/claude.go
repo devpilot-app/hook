@@ -132,7 +132,7 @@ func (Adapter) RenderDecision(hookEvent string, d wire.DecisionKind, choice, too
 			"hookSpecificOutput": map[string]any{
 				"hookEventName":            "PreToolUse",
 				"permissionDecision":       "deny",
-				"permissionDecisionReason": denyReason(choice),
+				"permissionDecisionReason": agent.DenyReason(choice),
 			},
 		})
 	}
@@ -140,7 +140,7 @@ func (Adapter) RenderDecision(hookEvent string, d wire.DecisionKind, choice, too
 	decision := map[string]any{"behavior": "allow"}
 	if d == wire.DecisionDeny {
 		decision["behavior"] = "deny"
-		decision["message"] = denyReason(choice)
+		decision["message"] = agent.DenyReason(choice)
 	} else if obj, ok := decodeObject(toolInput); ok {
 		decision["updatedInput"] = obj
 	}
@@ -150,15 +150,6 @@ func (Adapter) RenderDecision(hookEvent string, d wire.DecisionKind, choice, too
 			"decision":      decision,
 		},
 	})
-}
-
-// denyReason 生成 deny 的 message；选项作答时把标签原样喂回模型。
-func denyReason(choice string) string {
-	if choice == "" {
-		return "Denied from phone"
-	}
-	return "The user has already answered this question from their phone. " +
-		"Their answer is: \"" + choice + "\". Treat it as the user's final choice and proceed accordingly without asking again."
 }
 
 // decodeObject 把原始 tool_input 解析成对象；空/非法/非对象一律 false。

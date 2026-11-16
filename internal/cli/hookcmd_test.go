@@ -360,9 +360,12 @@ func TestHookTmuxPaneTTYPreferred(t *testing.T) {
 	script := filepath.Join(bin, "tmux")
 	// list-panes:真 pane(ttys 命中本测试 tty,窗口 2)+ 两行 decoy;
 	// display-message:激活窗回落,故意输出不同窗口号 9。
+	// decoy 的 ttys 由真 tty 加字母后缀派生,绝不与本进程 tty 撞名——
+	// 早期硬编码 ttys001/ttys010,测试跑在新终端的首个 pty(ttys001)时
+	// 诱饵行与真行双重命中,parsePaneList 取到诱饵(2026-11-16 本机复现)。
 	stub := "#!/bin/sh\ncase \"$*\" in\n" +
 		"*list-panes*)" +
-		"printf '/dev/ttys001\\t0\\t0\\n/dev/" + tty + "\\tmain\\t2\\n/dev/ttys010\\tmain\\t9\\n';;" +
+		"printf '/dev/" + tty + "A\\t0\\t0\\n/dev/" + tty + "\\tmain\\t2\\n/dev/" + tty + "B\\tmain\\t9\\n';;" +
 		"*)echo ' main 9 ';;\nesac\n"
 	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)

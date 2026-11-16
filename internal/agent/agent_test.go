@@ -10,6 +10,7 @@ import (
 	"github.com/twotwoba/DevPilot-Hook/internal/agent"
 	"github.com/twotwoba/DevPilot-Hook/internal/agent/claude"
 	"github.com/twotwoba/DevPilot-Hook/internal/agent/codex"
+	"github.com/twotwoba/DevPilot-Hook/internal/agent/opencode"
 	"github.com/twotwoba/DevPilot-Hook/internal/config"
 )
 
@@ -188,6 +189,85 @@ func TestCodexNormalizeAndRender(t *testing.T) {
 	hso := payload["hookSpecificOutput"].(map[string]any)
 	if hso["permissionDecision"] != "deny" {
 		t.Fatalf("Codex 决策输出不符: %s", out)
+	}
+}
+
+// TestOpenCodeEventMappingFromFixture 钉住插件→EXE 的 JSON 契约：fixture
+// 逐字复刻 JS 插件 callHook 拼出的载荷（snake_case session_id、无
+// transcript_path、小写工具名），必须原样穿过 ParseInput 并映射到 wire。
+func TestOpenCodeEventMappingFromFixture(t *testing.T) {
+	ad := opencode.Adapter{}
+	now := int64(1760770000)
+
+	cases := []struct {
+		file string
+		want wire.EventType
+	}{
+		{"session_start.json", wire.EventSessionStarted},
+		{"pre_tool_use.json", wire.EventToolRunning},
+		{"permission_request.json", wire.EventApprovalRequired},
+		{"post_tool_use.json", wire.EventToolFinished},
+		{"stop.json", wire.EventTaskComplete},
+		{"session_end.json", wire.EventSessionEnded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			in := loadInput(t, "opencode", tc.file)
+			// 插件载荷只带 session_id：若解析层动了派生逻辑（transcript
+			// 派生、camelCase 回退），这里的原值断言最先碎。
+			if in.SessionID != "ses_ocdemo4t1bfhklpvbx" {
+				t.Fatalf("session_id 应原样保留，实际 %q", in.SessionID)
+			}
+			ev, err := ad.Normalize(in, "dd_test", now, config.ApprovalModePermissionRequest, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev == nil || ev.Envelope.Type != tc.want {
+				t.Fatalf("期望 %s，实际 %+v", tc.want, ev)
+			}
+			if ev.Envelope.Agent != wire.AgentOpenCode {
+				t.Fatalf("agent = %s，期望 opencode", ev.Envelope.Agent)
+			}
+			if err := ev.Envelope.Validate(); err != nil {
+				t.Fatalf("生成的事件未通过协议校验: %v", err)
+			}
+		})
+	}
+}
+
+// TestOpenCodeApprovalFromFixture 审批链路的关键契约：v1 permissionInput
+// 把 command/title/pattern 合进 tool_input，摘要必须取 command；审批 ID
+// 对同载荷稳定；PreToolUse 永不升格审批（插件无法否决工具执行）。
+func TestOpenCodeApprovalFromFixture(t *testing.T) {
+	ad := opencode.Adapter{}
+	in := loadInput(t, "opencode", "permission_request.json")
+	ev, err := ad.Normalize(in, "dd_test", 1, config.ApprovalModePermissionRequest, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ev.NeedsApproval {
+		t.Fatal("PermissionRequest 应阻塞审批")
+	}
+	if ev.Envelope.Payload.CommandSummary != "git push --force origin main" {
+		t.Fatalf("摘要应取 command 而非 title/pattern: %+v", ev.Envelope.Payload)
+	}
+	again, err := ad.Normalize(in, "dd_test", 2, config.ApprovalModePermissionRequest, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Envelope.ApprovalID == "" || again.Envelope.ApprovalID != ev.Envelope.ApprovalID {
+		t.Fatalf("同一工具调用应得到相同 approval_id: %q vs %q", ev.Envelope.ApprovalID, again.Envelope.ApprovalID)
+	}
+
+	pre := loadInput(t, "opencode", "pre_tool_use.json")
+	for _, mode := range []config.ApprovalMode{config.ApprovalModePermissionRequest, config.ApprovalModePreToolUse} {
+		ev, err := ad.Normalize(pre, "dd_test", 1, mode, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.NeedsApproval {
+			t.Fatalf("模式 %s 下 PreToolUse 不应升格为审批", mode)
+		}
 	}
 }
 

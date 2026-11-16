@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PreToolUse",
+  "session_id": "ses_ocdemo4t1bfhklpvbx",
+  "tool_name": "bash",
+  "tool_use_id": "prt_01HZX4K7QW",
+  "tool_input": {
+    "command": "swift build 2>&1 | tail -20"
+  },
+  "cwd": "/Users/eric/Dev/mobile-app"
+}

@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "ses_ocdemo4t1bfhklpvbx",
+  "tool_name": "bash",
+  "tool_use_id": "prt_01HZX4M2RD",
+  "tool_input": {
+    "command": "git push --force origin main",
+    "title": "Run git push --force origin main",
+    "pattern": "git push *"
+  },
+  "cwd": "/Users/eric/Dev/mobile-app",
+  "prompt": "Ship the release branch"
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -71,7 +72,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	req.Header.Set("Authorization", "Bearer "+string(token))
 	req.Header.Set("Content-Type", "application/json")
-	if info := tmuxProbe(body, cfg); info.session != "" {
+	if info := tmuxProbe(body, cfg, agentName); info.session != "" {
 		req.Header.Set("X-DevPilot-Tmux-Session", info.session)
 		if info.window != "" {
 			req.Header.Set("X-DevPilot-Tmux-Window", info.window)
@@ -103,18 +104,23 @@ type tmuxInfo struct {
 // 模式的 PreToolUse)+ 回合结束(Stop→TaskComplete,回复摘要卡同要路由
 // 回 tmux 会话,否则收件箱把它当非 tmux 会话展示)。PreToolUse/PostToolUse
 // 的普通遥测每工具各一次,保持不探测——hook 调用频繁,无条件探测会被
-// 卡死的 tmux 服务端拖累高频工具链。$TMUX 由 tmux 服务端注入;非 tmux
-// 环境为空,直接跳过。
+// 卡死的 tmux 服务端拖累高频工具链。
 //
-// 定位分两级:首选进程树向上找控制 tty 按 list-panes 精确锚 pane——hook
-// 被 Agent 以 setsid 拉起,自身无控制 tty,display-message 会回落到
-// 「会话当前激活窗」(用户此刻在看哪窗就报哪窗,并非 agent 所在窗);
-// Agent 进程自己持有 pane 的控制 tty,是唯一可靠锚点。无 tty 祖先时
-// 回落 display-message(会话名准,窗口号 best-effort)。
-func tmuxProbe(body []byte, cfg *config.Config) tmuxInfo {
-	if os.Getenv("TMUX") == "" {
-		return tmuxInfo{}
-	}
+// 定位分三级(2026-11-18 定型):
+//  1. tty 精确锚:进程树向上找控制 tty 按 list-panes 钉 pane——hook 被
+//     Agent 以 setsid 拉起,自身无控制 tty,Agent 进程自己持有 pane 的
+//     控制 tty,是唯一无歧义锚点;
+//  2. display-message 回落(仅 $TMUX 非空):$TMUX 由 tmux 服务端注入,
+//     非空 = Agent 引擎在 tmux 内,会话名准、窗口号 best-effort(用户
+//     此刻在看哪窗就报哪窗,并非 agent 所在窗)。$TMUX 空时绝不走这里
+//     ——无身份时 display-message 报「最近活跃会话」,纯瞎猜;
+//  3. cwd 深探锚($TMUX 空的主路径):引擎被后台化后(Claude Code
+//     bg-pty-host 自管 PTY,$TMUX 空、无 tty 祖先)脱离 tmux 进程树,
+//     但用户在 tmux pane 里打开同一会话时,pane 里跑着同 agent 的接入
+//     进程——「pane_current_command == agent 且 pane_current_path ==
+//     事件 cwd」即可恢复归属(paneByProject)。全落空 = 真不在 tmux
+//     附近,不带 header,网关按无会话处理(宁缺毋滥)。
+func tmuxProbe(body []byte, cfg *config.Config, agentName string) tmuxInfo {
 	in, err := agent.ParseInput(body)
 	if err != nil {
 		return tmuxInfo{}
@@ -133,11 +139,15 @@ func tmuxProbe(body []byte, cfg *config.Config) tmuxInfo {
 			return info
 		}
 	}
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#S #{window_index}").Output()
-	if err != nil {
-		return tmuxInfo{} // 失败回落:不带 header,网关按无会话处理
+	if os.Getenv("TMUX") != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#S #{window_index}").Output()
+		if err == nil {
+			if info := parseTmuxInfo(strings.TrimSpace(string(out))); info.session != "" {
+				return info
+			}
+		}
 	}
-	return parseTmuxInfo(strings.TrimSpace(string(out)))
+	return paneByProject(ctx, in.Cwd, agentName, in.SessionID)
 }
 
 // ancestorTTY 沿进程树向上找最近一个带控制 tty 的祖先,返回归一化 tty
@@ -199,6 +209,249 @@ func parsePaneList(out, tty string) tmuxInfo {
 		return parseTmuxInfo(parts[1] + " " + parts[2])
 	}
 	return tmuxInfo{}
+}
+
+// paneByProject 按「项目 cwd + pane 前台进程」深探 tmux pane(第二锚,
+// 三级探测的兜底级)。引擎被后台化(Claude Code bg-pty-host 自管 PTY,
+// $TMUX 空)脱离 tmux 进程树后,tty 锚与 display-message 全部失效;但
+// 用户在 tmux pane 里打开同一会话时,pane 里跑着同 agent 的接入进程,
+// cwd 就是事件 payload 的项目目录——按此恢复归属。
+//
+// 三段流水线:cwd 预筛(纯)→ ps 终验(pane 前台进程的 argv0 basename
+// == agent)→ 收敛(纯)。两段纯逻辑拆出便于表驱动测试;ps 终验不可省
+// ——pane_current_command 在 macOS tmux 上报的是可执行文件 basename
+// (claude 装在 versions/2.1.325 时报 "2.1.325"),且同目录裸 zsh 也会
+// 被 cwd 命中,只有 argv0 可靠。
+func paneByProject(ctx context.Context, cwd, agent, sessionID string) tmuxInfo {
+	target := normalizeProjPath(cwd)
+	if target == "" || strings.TrimSpace(agent) == "" {
+		return tmuxInfo{} // 线索缺位无从归属,不猜
+	}
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F",
+		"#{session_name}\t#{window_index}\t#{pane_current_path}\t#{window_active}\t#{session_attached}\t#{window_activity}\t#{pane_pid}").Output()
+	if err != nil {
+		return tmuxInfo{}
+	}
+	candidates := parsePaneProjectRows(string(out), target)
+	var sessionHits, agentHits []paneProjectRow
+	for _, row := range candidates {
+		switch paneSubtreeMatch(ctx, row.pid, agent, sessionID) {
+		case subtreeSession:
+			sessionHits = append(sessionHits, row)
+		case subtreeAgent:
+			agentHits = append(agentHits, row)
+		}
+	}
+	// session id 命中 = 本会话的 attach 视图(claude attach <id>),唯一
+	// 归属,直接取;理论上不会多命中(session id 全局唯一),防御性放弃。
+	if len(sessionHits) == 1 {
+		return sessionHits[0].info
+	}
+	if len(sessionHits) > 1 {
+		return tmuxInfo{}
+	}
+	return convergePaneRows(agentHits)
+}
+
+// paneProjectRow 是深探探针的一行候选与收敛权重。
+type paneProjectRow struct {
+	info     tmuxInfo
+	active   bool  // 所在窗口是该会话的激活窗口(用户视线所在)
+	attached bool  // 会话有客户端挂载(终端开着 / DevPilot attach 中)
+	activity int64 // 窗口最后活跃 epoch,越大越新
+	pid      string
+}
+
+// parsePaneProjectRows 解析 list-panes 输出并按 cwd 预筛(纯函数,测试钉)。
+// 行格式 7 列:session \t window \t path \t window_active \t attached
+// \t activity \t pane_pid。session_name 禁含 `:`,`\t` 分列不受名字内
+// 空格影响;path 归一(/private 前缀/尾斜杠)后全等比对。
+func parsePaneProjectRows(out, cwd string) []paneProjectRow {
+	target := normalizeProjPath(cwd)
+	if target == "" {
+		return nil
+	}
+	var rows []paneProjectRow
+	for line := range strings.SplitSeq(out, "\n") {
+		parts := strings.SplitN(line, "\t", 7)
+		if len(parts) != 7 || parts[0] == "" {
+			continue
+		}
+		if normalizeProjPath(parts[2]) != target {
+			continue
+		}
+		info := parseTmuxInfo(parts[0] + " " + parts[1])
+		if info.session == "" {
+			continue
+		}
+		rows = append(rows, paneProjectRow{
+			info:     info,
+			active:   parts[3] == "1",
+			attached: parts[4] != "0" && parts[4] != "",
+			activity: parseProjEpoch(parts[5]),
+			pid:      strings.TrimSpace(parts[6]),
+		})
+	}
+	return rows
+}
+
+// paneSubtreeMaxDepth 是 pane_pid 进程子树下溯的深度上限。pane_pid 是
+// pane 里最早的外壳进程(zsh),agent 是它的后代:zsh -c 'claude …' 挂
+// 一层,登录链(login→zsh→claude)两三层;4 层已覆盖一切现实形态。
+const paneSubtreeMaxDepth = 4
+
+// sessionIDMinLen 是 session id 参与 argv 匹配的最短长度:真实形态
+// (claude/codex 的 UUID v7、opencode 的 ses_+20)都远超此值;闸门防
+// 短合成串(如测试用 "s1")在 argv 全文里到处误撞。
+const sessionIDMinLen = 8
+
+// subtreeMatch 是 pane 进程子树的终验结论。
+type subtreeMatch int
+
+const (
+	subtreeNone   subtreeMatch = iota // 子树里没有 agent
+	subtreeAgent                      // 有 agent,但无会话级证据
+	subtreeSession                    // agent 进程 argv 含事件 session id = 本会话的 attach 视图,最强归属
+)
+
+// paneSubtreeMatch 终验 pane 的身份:pane_pid 是外壳(zsh),agent 跑在
+// 它的进程子树里——ps 全表建 ppid→children 映射,从 pane_pid 限深下溯:
+// 任一 agent 节点 argv 全文含 session id → subtreeSession(claude attach
+// <id> 形态,唯一归属);仅 argv0 basename 等值 → subtreeAgent(防
+// `claude-router` 前缀子串误中)。ps 失败 = 取证不可得 → 保守淘汰。
+func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) subtreeMatch {
+	root, err := strconv.ParseInt(strings.TrimSpace(rootPID), 10, 64)
+	if err != nil || root <= 0 {
+		return subtreeNone
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if len(sessionID) < sessionIDMinLen {
+		sessionID = "" // 短串不做 argv 全文匹配
+	}
+	out, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,ppid=,args=").Output()
+	if err != nil {
+		return subtreeNone
+	}
+	argv0 := make(map[int64]string)
+	fullArgs := make(map[int64]string)
+	children := make(map[int64][]int64)
+	for line := range strings.SplitSeq(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue // 表头残留/zombie 无 args
+		}
+		pid, errPID := strconv.ParseInt(f[0], 10, 64)
+		ppid, errPPID := strconv.ParseInt(f[1], 10, 64)
+		if errPID != nil || errPPID != nil {
+			continue
+		}
+		argv0[pid] = f[2]
+		fullArgs[pid] = strings.Join(f[2:], " ")
+		children[ppid] = append(children[ppid], pid)
+	}
+	type frame struct {
+		pid   int64
+		depth int
+	}
+	stack := []frame{{root, 0}}
+	visited := map[int64]bool{root: true}
+	isAgent := false
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur.depth > paneSubtreeMaxDepth {
+			continue
+		}
+		if filepath.Base(argv0[cur.pid]) == agent {
+			isAgent = true
+			if sessionID != "" && strings.Contains(fullArgs[cur.pid], sessionID) {
+				return subtreeSession
+			}
+		}
+		for _, child := range children[cur.pid] {
+			if !visited[child] {
+				visited[child] = true
+				stack = append(stack, frame{child, cur.depth + 1})
+			}
+		}
+	}
+	if isAgent {
+		return subtreeAgent
+	}
+	return subtreeNone
+}
+
+// convergePaneRows 收敛唯一归属(纯函数,测试钉):active > attached >
+// activity 三级排序(用户正在看的 pane 最可信);仍并列 = 同项目多开
+// 会话,归属不明 → 放弃(错路由比缺线索糟)。
+func convergePaneRows(rows []paneProjectRow) tmuxInfo {
+	if len(rows) == 0 {
+		return tmuxInfo{}
+	}
+	best, tied := rows[0], false
+	for _, row := range rows[1:] {
+		switch comparePaneRows(row, best) {
+		case 1:
+			best, tied = row, false // 更优候选取代
+		case 0:
+			tied = true // 同分并列,归属不明
+		}
+	}
+	if tied {
+		return tmuxInfo{}
+	}
+	return best.info
+}
+
+// comparePaneRows 收敛权重:1 = a 优于 b,-1 = b 优,0 = 完全同分
+// (window_active 2 分 > session_attached 1 分 > activity 数值)。
+func comparePaneRows(a, b paneProjectRow) int {
+	as, bs := paneScore(a), paneScore(b)
+	if as != bs {
+		if as > bs {
+			return 1
+		}
+		return -1
+	}
+	switch {
+	case a.activity > b.activity:
+		return 1
+	case a.activity < b.activity:
+		return -1
+	}
+	return 0
+}
+
+func paneScore(r paneProjectRow) int {
+	score := 0
+	if r.active {
+		score += 2
+	}
+	if r.attached {
+		score += 1
+	}
+	return score
+}
+
+func parseProjEpoch(raw string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// normalizeProjPath 归一路径比对:剥尾部斜杠与 /private 前缀——macOS
+// tmux 的 pane_current_path 报 realpath(/private/tmp/…),而 agent 的
+// cwd 常是 /tmp/… 符号链接形态,同一目录两边写法不一。
+func normalizeProjPath(p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.TrimSuffix(p, "/")
+	if p == "/private" || strings.HasPrefix(p, "/private/") {
+		p = strings.TrimPrefix(p, "/private")
+		p = strings.TrimSuffix(p, "/")
+	}
+	return p
 }
 
 // parseTmuxInfo 解析 display-message 输出:会话名可含空格,不能天真

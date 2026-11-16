@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -453,8 +454,11 @@ func TestHookTmuxProbeEventWhitelist(t *testing.T) {
 	}
 }
 
-// TestHookTmuxEnvMissingSkipsProbe 无 $TMUX(非 tmux 环境)直接跳过。
-func TestHookTmuxEnvMissingSkipsProbe(t *testing.T) {
+// TestHookTmuxEnvMissingStaysConservative 无 $TMUX(引擎被后台化/非 tmux
+// 环境):绝不走 display-message——无身份时它报「最近活跃会话」,纯瞎猜;
+// 只允许 cwd 深探锚(list-panes)。桩输出无 tab(探不出归属)→ 不带
+// header,行为与旧「跳过探测」对外一致,但探测面已扩展。
+func TestHookTmuxEnvMissingStaysConservative(t *testing.T) {
 	counter := fakeTmux(t)
 	t.Setenv("TMUX", "")
 	var header string
@@ -470,9 +474,243 @@ func TestHookTmuxEnvMissingSkipsProbe(t *testing.T) {
 		strings.NewReader(`{"session_id":"s1","hook_event_name":"PermissionRequest"}`), &stdout, &stderr)
 
 	if header != "" {
-		t.Fatalf("无 TMUX 不应带 header,得到 %q", header)
+		t.Fatalf("探不出归属不应带 header,得到 %q", header)
 	}
-	if n := tmuxCalls(t, counter); n != 0 {
-		t.Fatalf("无 TMUX 不应探测,实际 %d 次", n)
+	// list-panes(tty 锚或 cwd 深探)跑了;display-message 一次都不能有。
+	// fakeTmux 的桩对所有子命令同输出,只能数总量:上限 2(tty 锚 + 深探),
+	// display-message 若被调总量会到 3+。
+	if n := tmuxCalls(t, counter); n < 1 || n > 2 {
+		t.Fatalf("无 TMUX 探测次数 = %d, want 1~2(仅 list-panes)", n)
+	}
+}
+
+// TestHookTmuxProjectProbeWhenEngineDetached 后台化引擎($TMUX 空、无 tty
+// 祖先)的 cwd 深探:同项目 tmux pane 里跑着同 agent 的接入进程 → 按卡上
+// 的 session/window 恢复归属;display-message 绝不被调。
+func TestHookTmuxProjectProbeWhenEngineDetached(t *testing.T) {
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "calls")
+	tmuxStub := "#!/bin/sh\necho \"$*\" >> " + counter + "\n" +
+		"case \"$*\" in\n" +
+		"*list-panes*)" +
+		"printf 'other\\t8\\t/elsewhere\\t1\\t1\\t99\\t99999\\n" +
+		"1\\t2\\t/tmp/proj-x\\t1\\t1\\t50\\t4242\\n';;" +
+		"*display-message*)echo 'WRONG 9';;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ps 终验桩:全表形态——4242 = pane 外壳 zsh,孩子 4243 = claude
+	// (子树命中路径);其余子树无 claude。
+	psStub := "#!/bin/sh\ncat <<'EOF'\n" +
+		"  4242       1 -zsh\n" +
+		"  4243    4242 claude\n" +
+		"  99999       1 -zsh\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(psStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "")
+
+	var gotSession, gotWindow string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("X-DevPilot-Tmux-Session")
+		gotWindow = r.Header.Get("X-DevPilot-Tmux-Window")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	paths, _ := newTestPaths(t, portOf(t, srv.URL))
+	var stdout, stderr bytes.Buffer
+	runHook([]string{"--dir", paths.Dir, "claude"},
+		strings.NewReader(`{"session_id":"s1","hook_event_name":"Stop","cwd":"/tmp/proj-x"}`),
+		&stdout, &stderr)
+
+	if gotSession != "1" {
+		t.Fatalf("tmux session header = %q, want 1(cwd 深探命中)", gotSession)
+	}
+	if gotWindow != "2" {
+		t.Fatalf("tmux window header = %q, want 2", gotWindow)
+	}
+	for _, line := range readLines(t, counter) {
+		if strings.Contains(line, "display-message") {
+			t.Fatalf("无 TMUX 绝不应走 display-message,实际调用 %q", line)
+		}
+	}
+}
+
+// TestHookTmuxProjectProbeSessionIDHit session id 精确归属:同项目两个
+// pane 同分并列(旧收敛规则会放弃),但其中一个 pane 的子树跑着
+// `claude attach <session id>` → 唯一命中,不再依赖权重猜。
+func TestHookTmuxProjectProbeSessionIDHit(t *testing.T) {
+	const sid = "cc07dd44-94e3-40d3-8e1a-5119769ecf6b"
+	bin := t.TempDir()
+	tmuxStub := "#!/bin/sh\ncase \"$*\" in\n" +
+		"*list-panes*)" +
+		"printf '1\\t2\\t/tmp/proj-x\\t1\\t0\\t50\\t4242\\n" +
+		"DevPilot\\t1\\t/tmp/proj-x\\t1\\t0\\t50\\t4244\\n';;" +
+		"*display-message*)echo 'WRONG 9';;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	psStub := "#!/bin/sh\ncat <<'EOF'\n" +
+		"  4242       1 -zsh\n" +
+		"  4243    4242 claude\n" +
+		"  4244       1 -zsh\n" +
+		"  4245    4244 claude attach " + sid + "\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(psStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "")
+
+	var gotSession, gotWindow string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("X-DevPilot-Tmux-Session")
+		gotWindow = r.Header.Get("X-DevPilot-Tmux-Window")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	paths, _ := newTestPaths(t, portOf(t, srv.URL))
+	var stdout, stderr bytes.Buffer
+	runHook([]string{"--dir", paths.Dir, "claude"},
+		strings.NewReader(`{"session_id":"`+sid+`","hook_event_name":"Stop","cwd":"/tmp/proj-x"}`),
+		&stdout, &stderr)
+
+	if gotSession != "DevPilot" || gotWindow != "1" {
+		t.Fatalf("session/window header = %q:%q, want DevPilot:1(session id 精确归属)", gotSession, gotWindow)
+	}
+}
+
+func readLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+}
+
+// TestParsePaneProjectRows cwd 预筛(纯函数):/private 归一、残缺行跳过、
+// 窗口号非数字保留会话名、收敛字段落位。
+func TestParsePaneProjectRows(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		cwd  string
+		want []paneProjectRow
+	}{
+		{"单命中", "main\t2\t/tmp/p\t1\t1\t50\t4242\n", "/tmp/p",
+			[]paneProjectRow{{info: tmuxInfo{session: "main", window: "2"}, active: true, attached: true, activity: 50, pid: "4242"}}},
+		{"macOS realpath 归一", "main\t2\t/private/tmp/p/\t0\t0\t9\t1\n", "/tmp/p",
+			[]paneProjectRow{{info: tmuxInfo{session: "main", window: "2"}, activity: 9, pid: "1"}}},
+		{"cwd 不匹配不命中", "main\t2\t/elsewhere\t1\t1\t50\t7\n", "/tmp/p", nil},
+		{"cwd 线索缺位不猜", "main\t2\t/tmp/p\t1\t1\t50\t7\n", "", nil},
+		{"attached 零值判否", "main\t2\t/tmp/p\t0\t0\t50\t7\n", "/tmp/p",
+			[]paneProjectRow{{info: tmuxInfo{session: "main", window: "2"}, activity: 50, pid: "7"}}},
+		{"残缺行跳过其余照常", "garbage-no-tabs\ns\t1\t/tmp/p\t0\t0\t10\t3\n", "/tmp/p",
+			[]paneProjectRow{{info: tmuxInfo{session: "s", window: "1"}, activity: 10, pid: "3"}}},
+		{"窗口号非数字保留会话名", "s\txx\t/tmp/p\t1\t1\t50\t7\n", "/tmp/p",
+			[]paneProjectRow{{info: tmuxInfo{session: "s"}, active: true, attached: true, activity: 50, pid: "7"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parsePaneProjectRows(tc.out, tc.cwd)
+			if len(got) != len(tc.want) {
+				t.Fatalf("候选数 = %d, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("候选[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestConvergePaneRows 收敛规则(纯函数):active > attached > activity
+// 三级排序,仍并列放弃(错路由比缺线索糟)。
+func TestConvergePaneRows(t *testing.T) {
+	row := func(session, window string, active, attached bool, activity int64) paneProjectRow {
+		return paneProjectRow{info: tmuxInfo{session: session, window: window}, active: active, attached: attached, activity: activity}
+	}
+	cases := []struct {
+		name    string
+		rows    []paneProjectRow
+		session string
+		window  string
+	}{
+		{"空候选放弃", nil, "", ""},
+		{"单候选直取", []paneProjectRow{row("main", "2", false, false, 1)}, "main", "2"},
+		{"active 胜 attached", []paneProjectRow{row("a", "0", false, true, 50), row("b", "3", true, false, 9)}, "b", "3"},
+		{"attached 胜 activity", []paneProjectRow{row("a", "0", false, true, 99), row("b", "3", false, false, 50)}, "a", "0"},
+		{"activity 决胜同分", []paneProjectRow{row("a", "0", false, true, 10), row("b", "3", false, true, 99)}, "b", "3"},
+		{"全同分放弃", []paneProjectRow{row("a", "0", false, true, 50), row("b", "3", false, true, 50)}, "", ""},
+		{"双 active 同 activity 并列放弃", []paneProjectRow{row("a", "0", true, true, 50), row("b", "3", true, true, 50)}, "", ""},
+		{"三候选唯一最优", []paneProjectRow{row("x", "0", true, true, 10), row("y", "1", true, true, 99), row("z", "2", false, true, 500)}, "y", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convergePaneRows(tc.rows)
+			if got.session != tc.session || got.window != tc.window {
+				t.Fatalf("convergePaneRows = %+v, want session=%q window=%q", got, tc.session, tc.window)
+			}
+		})
+	}
+}
+
+// TestPaneSubtreeMatch ps 子树终验:pane_pid 是外壳 zsh,agent 在后代;
+// argv 全文含 session id = 本会话 attach 视图(最强);argv0 basename
+// 精确等值,前缀子串不误中;短 session id 不参与 argv 匹配;限深 4 层。
+func TestPaneSubtreeMatch(t *testing.T) {
+	bin := t.TempDir()
+	// 全表:100=外壳 zsh + 孩子 200 claude attach cc07dd44(session 命中);
+	// 300 链式 zsh→login→zsh→claude --resume x(仅 agent);700 链深 5 越限;
+	// 900=claude-router 前缀子串;99=zombie。
+	psStub := "#!/bin/sh\ncat <<'EOF'\n" +
+		"  100     1 -zsh\n" +
+		"  200   100 claude attach cc07dd44-94e3-40d3-8e1a-5119769ecf6b\n" +
+		"  300     1 -zsh\n" +
+		"  400   300 login -fp eric\n" +
+		"  500   400 -zsh\n" +
+		"  600   500 claude --resume x\n" +
+		"  700     1 -zsh\n" +
+		"  705   700 a\n" +
+		"  710   705 b\n" +
+		"  715   710 c\n" +
+		"  720   715 d\n" +
+		"  725   720 claude\n" +
+		"  900     1 claude-router serve\n" +
+		"   99     1 (zombie)\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(psStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx := context.Background()
+	for _, tc := range []struct {
+		pid, agent, sessionID string
+		want       subtreeMatch
+		note       string
+	}{
+		{"100", "claude", "cc07dd44-94e3-40d3-8e1a-5119769ecf6b", subtreeSession, "argv 含 session id = attach 视图"},
+		{"300", "claude", "cc07dd44-94e3-40d3-8e1a-5119769ecf6b", subtreeAgent, "agent 在但无会话证据"},
+		{"300", "claude", "", subtreeAgent, "session id 缺位降级 agent 判定"},
+		{"300", "claude", "s1", subtreeAgent, "短串不参与 argv 匹配(防误撞)"},
+		{"700", "claude", "", subtreeNone, "深 5 越限"},
+		{"900", "claude", "", subtreeNone, "根自身前缀子串不误中"},
+		{"99", "claude", "", subtreeNone, "zombie 无 argv0"},
+		{"4242", "claude", "", subtreeNone, "表外 pid 淘汰"},
+		{"", "claude", "", subtreeNone, "pid 缺位"},
+		{"abc", "claude", "", subtreeNone, "非数字 pid"},
+	} {
+		if got := paneSubtreeMatch(ctx, tc.pid, tc.agent, tc.sessionID); got != tc.want {
+			t.Fatalf("%s: paneSubtreeMatch(%q,%q) = %v, want %v", tc.note, tc.pid, tc.sessionID, got, tc.want)
+		}
 	}
 }

@@ -105,6 +105,45 @@ func TestAskUserQuestionInterception(t *testing.T) {
 	}
 }
 
+// TestAskUserQuestionPermissionRequestDedupes 新版 Claude Code 对
+// AskUserQuestion 也会开火 PermissionRequest（2026-11-20 真机 23:25 双卡:
+// PreToolUse 带派生 id,PermissionRequest 输入缺 tool_use_id 落随机 id,
+// 收件箱同题两张卡）。开关开→本事件直接丢弃（PreToolUse 已发卡）;开关关→
+// 降级为只通知不阻塞的事件卡（不登记等待,204 让原生框回终端）。
+// 问题永不阻塞是 2026-11-11 拍板,PermissionRequest 通道同样适用。
+func TestAskUserQuestionPermissionRequestDedupes(t *testing.T) {
+	pr := askIn()
+	pr.HookEventName = "PermissionRequest"
+
+	// 开:丢弃,不产任何事件
+	ev, err := Adapter{}.Normalize(pr, "dv_1", 1_000, config.ApprovalModePermissionRequest, true)
+	if err != nil {
+		t.Fatalf("Normalize(on): %v", err)
+	}
+	if ev != nil {
+		t.Fatalf("answerQuestions=true 的 PermissionRequest(AskUserQuestion) 应丢弃,得 type=%q", ev.Envelope.Type)
+	}
+
+	// 关:事件卡片,但**不阻塞**（NeedsApproval=false → hook 204 → 原生框回终端）
+	ev2, err := Adapter{}.Normalize(pr, "dv_1", 1_000, config.ApprovalModePermissionRequest, false)
+	if err != nil {
+		t.Fatalf("Normalize(off): %v", err)
+	}
+	if ev2 == nil || ev2.NeedsApproval || ev2.Envelope.Type != "approval_required" {
+		t.Fatalf("answerQuestions=false 应发只通知不阻塞的审批卡,得 %#v", ev2)
+	}
+
+	// 普通工具的 PermissionRequest 不受影响:仍是阻塞审批
+	bash := agent.Input{SessionID: "s1", HookEventName: "PermissionRequest", ToolName: "Bash", ToolUseID: "tu_2", ToolInput: json.RawMessage(`{"command":"ls"}`)}
+	ev3, err := Adapter{}.Normalize(bash, "dv_1", 1_000, config.ApprovalModePermissionRequest, true)
+	if err != nil {
+		t.Fatalf("Normalize(bash): %v", err)
+	}
+	if !ev3.NeedsApproval {
+		t.Fatal("Bash 的 PermissionRequest 仍应登记等待")
+	}
+}
+
 // TestAskUserQuestionAnsweredClosesCard 终端答完后收卡:PostToolUse 用同一
 // tool_use_id + tool_input 重算 approval_id，发 cancelled close（App 侧
 // 据此盖 Answered at terminal），不依赖 daemon 内存关联表。

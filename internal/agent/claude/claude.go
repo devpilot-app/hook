@@ -49,6 +49,20 @@ func (Adapter) Normalize(in agent.Input, daemonID string, now int64, mode config
 		env := agent.NewEnvelope(wire.AgentClaude, daemonID, in, wire.EventToolRunning, agent.WithTool(agent.BasePayload(in), in), now)
 		return &agent.Event{Envelope: env, HookEvent: in.HookEventName}, nil
 	case "PermissionRequest":
+		// AskUserQuestion 不是权限询问（2026-11-11 拍板:问题永不阻塞,手机卡
+		// 只通知+终端作答）。新版 Claude Code 对 AskUserQuestion 也会开火
+		// PermissionRequest（真机 2026-11-20 23:25 双卡实锤:同题两条
+		// approval_required——PreToolUse 带全派生 id,PermissionRequest 的
+		// hook 输入缺 tool_use_id 落随机 id），这里恒按「只通知」处理:
+		// answerQuestions 开着时 PreToolUse 已发过卡,本事件直接丢弃;
+		// 关着时降级为事件卡片（不登记等待、不阻塞,204 让终端出原生框）。
+		if in.ToolName == "AskUserQuestion" {
+			if answerQuestions {
+				return nil, nil
+			}
+			env := agent.NewApprovalEnvelope(wire.AgentClaude, daemonID, in, now)
+			return &agent.Event{Envelope: env, HookEvent: in.HookEventName}, nil
+		}
 		env := agent.NewApprovalEnvelope(wire.AgentClaude, daemonID, in, now)
 		return &agent.Event{Envelope: env, HookEvent: in.HookEventName, NeedsApproval: true}, nil
 	case "PostToolUse":

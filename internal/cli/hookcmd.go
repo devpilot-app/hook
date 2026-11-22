@@ -101,10 +101,15 @@ type tmuxInfo struct {
 // tmuxProbe 探测当前 tmux 会话名与窗口号(经专用 header 传给 daemon,由
 // 网关盖进 payload,App 收件箱据此路由回会话/展示详情)。探测名单 =
 // 需要 tmux 定位的事件:审批候选(PermissionRequest、pre-tool-use 审批
-// 模式的 PreToolUse)+ 回合结束(Stop→TaskComplete,回复摘要卡同要路由
-// 回 tmux 会话,否则收件箱把它当非 tmux 会话展示)。PreToolUse/PostToolUse
-// 的普通遥测每工具各一次,保持不探测——hook 调用频繁,无条件探测会被
-// 卡死的 tmux 服务端拖累高频工具链。
+// 模式的 PreToolUse)+ 问题卡(PreToolUse 的 AskUserQuestion——它不走
+// PermissionRequest 通道,是唯一纯导航卡,Answer at Terminal 全靠这组
+// 坐标;permission-request 模式下普通 PreToolUse 遥测不探测,唯独问题卡
+// 必须探:2026-11-22 实锤缺它导致卡上无坐标,App 只能按 cwd 派生名
+// new -A 新开同名会话跑 resume fork,进错会话还展示「Interrupted」)+
+// 回合结束(Stop→TaskComplete,回复摘要卡同要路由回 tmux 会话,否则收件
+// 箱把它当非 tmux 会话展示)。问题卡每问题至多一次,与 Stop 同频级,
+// 不会拖累高频工具链;PostToolUse 等遥测保持不探测——hook 调用频繁,
+// 无条件探测会被卡死的 tmux 服务端拖累高频工具链。
 //
 // 定位分三级(2026-11-18 定型):
 //  1. tty 精确锚:进程树向上找控制 tty 按 list-panes 钉 pane——hook 被
@@ -128,7 +133,8 @@ func tmuxProbe(body []byte, cfg *config.Config, agentName string) tmuxInfo {
 	wantsTmuxProbe := in.HookEventName == "PermissionRequest" ||
 		in.HookEventName == "Stop" ||
 		(in.HookEventName == "PreToolUse" &&
-			config.ApprovalMode(cfg.ApprovalMode) == config.ApprovalModePreToolUse)
+			(config.ApprovalMode(cfg.ApprovalMode) == config.ApprovalModePreToolUse ||
+				in.ToolName == "AskUserQuestion"))
 	if !wantsTmuxProbe {
 		return tmuxInfo{}
 	}

@@ -397,19 +397,25 @@ func TestHookTmuxPaneTTYPreferred(t *testing.T) {
 
 // TestHookTmuxProbeEventWhitelist 探测名单外的事件不探测:
 // 高频工具 hook 不能被 tmux 服务端卡死拖累;Stop(回合结束 relay)
-// 低频且收件箱路由需要,在名单内。
+// 低频且收件箱路由需要,在名单内;AskUserQuestion 问题卡(2026-11-22
+// 实锤)是唯一纯导航卡,Answer at Terminal 全靠坐标,任何审批模式都在
+// 名单内;普通工具 PreToolUse 遥测保持名单外。
 func TestHookTmuxProbeEventWhitelist(t *testing.T) {
 	cases := []struct {
 		name      string
 		eventName string
+		toolName  string
 		mode      string // 空 = 默认 permission-request
 		probe     bool
 	}{
-		{"permission_request 默认模式", "PermissionRequest", "", true},
-		{"stop 回合结束 relay", "Stop", "", true},
-		{"pre_tool_use 审批模式", "PreToolUse", string(config.ApprovalModePreToolUse), true},
-		{"post_tool_use 不探测", "PostToolUse", "", false},
-		{"pre_tool_use 非审批模式不探测", "PreToolUse", "", false},
+		{"permission_request 默认模式", "PermissionRequest", "", "", true},
+		{"stop 回合结束 relay", "Stop", "", "", true},
+		{"pre_tool_use 审批模式", "PreToolUse", "", string(config.ApprovalModePreToolUse), true},
+		{"问题卡 permission_request 模式", "PreToolUse", "AskUserQuestion", "", true},
+		{"问题卡 pre_tool_use 审批模式", "PreToolUse", "AskUserQuestion", string(config.ApprovalModePreToolUse), true},
+		{"post_tool_use 不探测", "PostToolUse", "", "", false},
+		{"pre_tool_use 非审批模式不探测", "PreToolUse", "", "", false},
+		{"普通工具 pre_tool_use 遥测不探测", "PreToolUse", "Bash", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -432,7 +438,11 @@ func TestHookTmuxProbeEventWhitelist(t *testing.T) {
 				}
 			}
 			var stdout, stderr bytes.Buffer
-			body := `{"session_id":"s1","hook_event_name":"` + tc.eventName + `"}`
+			body := `{"session_id":"s1","hook_event_name":"` + tc.eventName + `"`
+			if tc.toolName != "" {
+				body += `,"tool_name":"` + tc.toolName + `"`
+			}
+			body += `}`
 			runHook([]string{"--dir", paths.Dir, "claude"}, strings.NewReader(body), &stdout, &stderr)
 
 			if tc.probe {

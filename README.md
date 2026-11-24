@@ -113,3 +113,18 @@ GoReleaser needs one extra secret: `HOMEBREW_TAP_TOKEN` (pushes to
 
 Releases are non-draft: the cask manifest references release assets, and
 external downloads would 404 while a release is a draft.
+
+## License
+
+Source-available under the [Functional Source License 1.1, ALv2 Future License](LICENSE.md) (FSL-1.1-ALv2). This is not an OSI-approved open source license: the code stays publicly readable and auditable, but there is one restriction.
+
+**Permitted** — any purpose other than a Competing Use, which includes:
+
+- reading, auditing and modifying the code;
+- installing and running the daemon on your own machines;
+- internal use in your own products and services;
+- non-commercial education and research.
+
+**Not permitted** — a Competing Use: offering this daemon, or anything with substantially similar functionality, to others as a commercial product or hosted service.
+
+Every release becomes available under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) on the second anniversary of its release. For a commercial license covering a Competing Use, contact [support@devpilot.app](mailto:support@devpilot.app).

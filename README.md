@@ -1,22 +1,24 @@
-# DevPilot-Hook
+# DevPilot hook daemon
 
-The **hook daemon** of the DevPilot project: a long-running Go process on your dev machine that feeds Claude Code / Codex / OpenCode hook events (including approval requests) into the cloud push pipeline and routes approval decisions back to the agent — the loop stays closed even when the app has been killed or the phone is locked.
+The **hook daemon** of the DevPilot project, in [`devpilot-app/hook`](https://github.com/devpilot-app/hook): a long-running Go process on your dev machine that feeds Claude Code / Codex / OpenCode hook events (including approval requests) into the cloud push pipeline and routes approval decisions back to the agent — the loop stays closed even when the app has been killed or the phone is locked.
+
+> **License:** source-available under [FSL-1.1-ALv2](LICENSE.md) — free to install, audit and modify; shipping it (or a substantially similar daemon) as a competing product needs a commercial license. Details under [License](#license).
 
 ## How the three projects fit together
 
 Two Go repos and one iOS app, one chain:
 
-| | DevPilot | **DevPilot-Hook (this repo)** | DevPilot-APNS |
+| | DevPilot (iOS app) | **[devpilot-app/hook](https://github.com/devpilot-app/hook) (this repo)** | [devpilot-app/apns](https://github.com/devpilot-app/apns) |
 |---|---|---|---|
 | What it is | iOS app (Swift/SwiftUI) | **Go daemon on the dev machine** | Go relay on a cloud VPS |
 | Responsibility | Terminal/SSH, inbox UI, approval panel, Live Activity, APNs token registration | Hook adapters (Claude Code / Codex / OpenCode), local gateway on 127.0.0.1:24543, event aggregation & rate limiting, offline buffering | WSS ingest, pairing routing table, APNs push, Live Activity remote-update forwarding |
 | Role in the chain | WSS client (app side): receives pushes, sends approval decisions upstream | WSS client (daemon side): sends events upstream, receives approval decisions | Hub: auth, routing, APNs |
-| Code boundary | App-side integration (RelayChannel model, etc.) | The daemon itself; `pkg/wire` imported from DevPilot-APNS via go.mod | The whole relay + the **`pkg/wire` protocol type library (single source of truth for the wire protocol across all three ends)** |
+| Code boundary | App-side integration (RelayChannel model, etc.) | The daemon itself; `pkg/wire` imported from `github.com/devpilot-app/apns` via go.mod | The whole relay + the **`pkg/wire` protocol type library (single source of truth for the wire protocol across all three ends)** |
 
 ```
 Claude Code / Codex / OpenCode events
-  → DevPilot-Hook daemon (this repo, local gateway 127.0.0.1:24543)
-  → DevPilot-APNS relay (VPS: auth → routing table → channel selection)
+  → hook daemon (this repo, local gateway 127.0.0.1:24543)
+  → APNs relay (devpilot-app/apns, VPS: auth → routing table → channel selection)
   → Apple APNs (HTTP/2) ── or ── direct push over the app's WSS connection
   → iPhone (notification / Live Activity / inbox)
 Approval flows back: iPhone Allow/Deny → relay → daemon (this repo) → hook unblocks, agent continues
@@ -87,9 +89,9 @@ match the installed CLI.
 ## Development & testing
 
 ```bash
-cp go.work.example go.work   # requires a sibling DevPilot-APNS checkout
+cp go.work.example go.work   # adjust the sibling path if the apns checkout is not ../DevPilot-APNS
 go test -race ./...
-go test -race -tags=e2e ./test/e2e -v   # requires sibling DevPilot-APNS; builds both binaries on the fly
+go test -race -tags=e2e ./test/e2e -v   # needs the sibling apns checkout (DEVPILOT_APNS_DIR overrides the default); builds both binaries on the fly
 make build                    # ./bin/devpilot-hook
 ```
 
@@ -97,19 +99,19 @@ E2E coverage: a real `hook` subprocess → daemon → relay (APNs mock) → fake
 
 ## Release
 
-This repo depends on DevPilot-APNS's `pkg/wire`; tag the sibling repo first:
+This repo depends on `github.com/devpilot-app/apns` (`pkg/wire`); tag that repo first:
 
 ```bash
-# 1. DevPilot-APNS: publish v0.1.0 (relay + pkg/wire)
-# 2. This repo: write the checksum into go.sum (the workspace replace does not participate)
+# 1. devpilot-app/apns: publish a tag (relay + pkg/wire)
+# 2. This repo: refresh the dependency checksums (a workspace replace does not participate)
 GOWORK=off go mod tidy
 # 3. Tag to trigger .github/workflows/release.yml (GoReleaser)
-git tag v0.1.0 && git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-GoReleaser needs one extra secret: `HOMEBREW_TAP_TOKEN` (pushes to
-`twotwoba/homebrew-devpilot`). Create that empty repo first and grant the PAT
-`Contents: Read and write`.
+GoReleaser needs one extra secret: `HOMEBREW_TAP_TOKEN` (pushes the cask to
+`devpilot-app/homebrew-devpilot`). Grant that token `Contents: Read and write`
+on the tap repository.
 
 Releases are non-draft: the cask manifest references release assets, and
 external downloads would 404 while a release is a draft.

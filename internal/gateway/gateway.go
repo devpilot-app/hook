@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
-	"github.com/twotwoba/DevPilot-Hook/internal/event"
-	"github.com/twotwoba/DevPilot-Hook/internal/id"
-	"github.com/twotwoba/DevPilot-Hook/internal/queue"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
+	"github.com/devpilot-app/hook/internal/event"
+	"github.com/devpilot-app/hook/internal/id"
+	"github.com/devpilot-app/hook/internal/queue"
 )
 
 // MaxBodyBytes 是单个 hook 请求体上限。

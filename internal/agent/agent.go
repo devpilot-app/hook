@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
-	"github.com/twotwoba/DevPilot-Hook/internal/id"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/config"
+	"github.com/devpilot-app/hook/internal/id"
 )
 
 // ReplySummaryRunes 是 Stop 回复摘要的详情帽（2000 runes）。

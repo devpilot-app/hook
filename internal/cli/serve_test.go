@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // entryTimeouts 展开一个 hook 条目里所有 command 的 timeout。

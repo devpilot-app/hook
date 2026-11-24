@@ -27,7 +27,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/twotwoba/DevPilot-Hook/internal/cli.Version={{ .Version }}
+      - -s -w -X github.com/devpilot-app/hook/internal/cli.Version={{ .Version }}
 
 archives:
   - id: default

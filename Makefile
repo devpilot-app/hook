@@ -1,7 +1,7 @@
 GO ?= go
 BIN := devpilot-hook
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/twotwoba/DevPilot-Hook/internal/cli.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/devpilot-app/hook/internal/cli.Version=$(VERSION)
 
 .PHONY: help build test race e2e lint work install-local clean
 

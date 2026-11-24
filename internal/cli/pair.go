@@ -17,9 +17,9 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
-	"github.com/twotwoba/DevPilot-Hook/internal/id"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
+	"github.com/devpilot-app/hook/internal/id"
 )
 
 type pairSessionRequest struct {

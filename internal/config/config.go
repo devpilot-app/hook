@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/id"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/id"
 )
 
 // 默认值。

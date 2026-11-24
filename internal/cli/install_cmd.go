@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 func runInstall(args []string, stdout, stderr io.Writer) int {

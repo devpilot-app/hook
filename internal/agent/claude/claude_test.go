@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // Stop 回复摘要走详情帽（agent.ReplySummaryRunes=2000）且保结构:

@@ -4,9 +4,9 @@ package claude
 import (
 	"encoding/json"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // Adapter 是 Claude Code 适配器。

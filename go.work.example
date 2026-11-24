@@ -11,4 +11,4 @@ use (
 
 // 精确版本替换：Go 不允许对工作区模块使用「替换所有版本」。
 // 版本号需与 go.mod 中 require 的版本保持一致。
-replace github.com/twotwoba/DevPilot-APNS v0.1.0 => ../DevPilot-APNS
+replace github.com/devpilot-app/apns v0.5.0 => ../DevPilot-APNS

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
+	"github.com/devpilot-app/apns/pkg/wire"
 )
 
 func testEnvelope(id string) wire.Envelope {

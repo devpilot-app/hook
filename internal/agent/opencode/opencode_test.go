@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 func opencodeInput(event string) agent.Input {

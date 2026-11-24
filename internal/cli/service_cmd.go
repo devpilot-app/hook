@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/service"
+	"github.com/devpilot-app/hook/internal/service"
 )
 
 func runService(args []string, stdout, stderr io.Writer) int {

@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
+	"github.com/devpilot-app/apns/pkg/wire"
 )
 
 // 默认压实阈值。

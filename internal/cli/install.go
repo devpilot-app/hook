@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // hookMarker 用于识别我们写入的 hook 条目，卸载时只删自己的。

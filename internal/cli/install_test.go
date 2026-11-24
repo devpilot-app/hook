@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // readHooks 读取配置中的 hooks 字段，方便断言。

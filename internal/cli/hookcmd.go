@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // tmuxProbeTimeout 是 tmux display-message 的兜底超时:

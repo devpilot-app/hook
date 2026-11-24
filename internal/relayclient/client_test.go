@@ -14,9 +14,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/event"
-	"github.com/twotwoba/DevPilot-Hook/internal/queue"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/event"
+	"github.com/devpilot-app/hook/internal/queue"
 )
 
 const credential = "dpd_dd_test_secret"

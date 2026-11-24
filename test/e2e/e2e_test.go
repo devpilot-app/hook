@@ -28,8 +28,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // approvalTimeout 是测试里的审批等待窗口；足够覆盖一次人工决策。

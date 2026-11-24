@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // pairRequestCapture 是一次 /v1/pairing/sessions 请求的快照。

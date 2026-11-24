@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent/claude"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent/opencode"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
-	"github.com/twotwoba/DevPilot-Hook/internal/event"
-	"github.com/twotwoba/DevPilot-Hook/internal/queue"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/agent/claude"
+	"github.com/devpilot-app/hook/internal/agent/opencode"
+	"github.com/devpilot-app/hook/internal/config"
+	"github.com/devpilot-app/hook/internal/event"
+	"github.com/devpilot-app/hook/internal/queue"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"

@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/cli"
+	"github.com/devpilot-app/hook/internal/cli"
 )
 
 func main() {

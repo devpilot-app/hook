@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/agent"
 )
 
 // openCodePluginVersion 是插件文件协议版本；升级插件内容时递增，

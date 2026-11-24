@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // newTestPaths 构造带配置与 token 的临时状态目录。

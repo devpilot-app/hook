@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 type checkResult struct {

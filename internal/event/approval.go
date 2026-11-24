@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
+	"github.com/devpilot-app/apns/pkg/wire"
 )
 
 // Status 是审批状态。

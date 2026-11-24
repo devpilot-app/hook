@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
+	"github.com/devpilot-app/apns/pkg/wire"
 )
 
 func env(id string) wire.Envelope {

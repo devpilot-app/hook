@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 // openCodeVersionTimeout 是 `opencode --version` 的兜底超时：正常是毫秒级

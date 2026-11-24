@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/agent"
 )
 
 // openCodeTestEnv 把 XDG_CONFIG_HOME 指到临时目录，并放一个假的

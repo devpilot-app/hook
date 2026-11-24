@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent/claude"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent/codex"
-	"github.com/twotwoba/DevPilot-Hook/internal/agent/opencode"
-	"github.com/twotwoba/DevPilot-Hook/internal/config"
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/agent"
+	"github.com/devpilot-app/hook/internal/agent/claude"
+	"github.com/devpilot-app/hook/internal/agent/codex"
+	"github.com/devpilot-app/hook/internal/agent/opencode"
+	"github.com/devpilot-app/hook/internal/config"
 )
 
 func loadInput(t *testing.T, agentName, file string) agent.Input {

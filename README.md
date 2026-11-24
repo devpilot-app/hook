@@ -47,10 +47,6 @@ curl -fsSL https://raw.githubusercontent.com/devpilot-app/hook/main/install.sh |
 > repositories. moshi's `rjyo/moshi` works the same way against
 > `rjyo/homebrew-moshi`. The tap only needs to be added once; afterwards
 > `brew upgrade --cask devpilot-hook` is enough.
->
-> Already on the old personal tap? Re-tap once:
-> `brew untap twotwoba/devpilot && brew tap devpilot-app/devpilot`, then
-> `brew upgrade --cask devpilot-hook`.
 
 On Linux you can also grab `.deb` / `.rpm` / `.tar.gz` from Releases directly.
 

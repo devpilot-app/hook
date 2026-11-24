@@ -502,6 +502,10 @@ func TestHookTmuxProbeEventWhitelist(t *testing.T) {
 func TestHookTmuxEnvMissingStaysConservative(t *testing.T) {
 	counter := fakeTmux(t)
 	t.Setenv("TMUX", "")
+	// 显式给项目根:没有 $TMUX 时探测只剩 cwd/项目深探。若项目根为空,
+	// 深探会直接短路,次数取决于本机有没有控制 tty(本地有、CI 无),用例
+	// 就成了环境依赖。清掉环境变量,锚点只由 body 的 cwd 提供。
+	t.Setenv("CLAUDE_PROJECT_DIR", "")
 	var header string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header = r.Header.Get("X-DevPilot-Tmux-Session")
@@ -512,7 +516,7 @@ func TestHookTmuxEnvMissingStaysConservative(t *testing.T) {
 	paths, _ := newTestPaths(t, portOf(t, srv.URL))
 	var stdout, stderr bytes.Buffer
 	runHook([]string{"--dir", paths.Dir, "claude"},
-		strings.NewReader(`{"session_id":"s1","hook_event_name":"PermissionRequest"}`), &stdout, &stderr)
+		strings.NewReader(`{"session_id":"s1","hook_event_name":"PermissionRequest","cwd":"/tmp/devpilot-env-missing"}`), &stdout, &stderr)
 
 	if header != "" {
 		t.Fatalf("探不出归属不应带 header,得到 %q", header)

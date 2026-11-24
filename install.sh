@@ -2,14 +2,14 @@
 # devpilot-hook 的 Linux / macOS 安装脚本。
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/twotwoba/DevPilot-Hook/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/devpilot-app/hook/main/install.sh | sh
 #
 # 可选环境变量：
 #   DEVPILOT_HOOK_VERSION     指定版本（默认取最新 release）
 #   DEVPILOT_HOOK_INSTALL_DIR 安装目录（默认 ~/.local/bin）
 set -eu
 
-REPO="twotwoba/DevPilot-Hook"
+REPO="devpilot-app/hook"
 BIN="devpilot-hook"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }

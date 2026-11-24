@@ -48,7 +48,7 @@ homebrew_casks:
       name: homebrew-devpilot
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
-    homepage: https://github.com/twotwoba/DevPilot-Hook
+    homepage: https://github.com/devpilot-app/hook
     description: DevPilot hook daemon for Claude Code / Codex
     binaries:
       - devpilot-hook
@@ -70,7 +70,7 @@ nfpms:
   - id: linux-packages
     package_name: devpilot-hook
     vendor: twotwoba
-    homepage: https://github.com/twotwoba/DevPilot-Hook
+    homepage: https://github.com/devpilot-app/hook
     maintainer: twotwoba
     description: DevPilot hook daemon for Claude Code / Codex
     formats:

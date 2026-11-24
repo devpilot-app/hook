@@ -39,7 +39,7 @@ brew install --cask devpilot-hook
 brew install --cask twotwoba/devpilot/devpilot-hook
 
 # macOS / Linux (script: verifies SHA-256, installs to ~/.local/bin)
-curl -fsSL https://raw.githubusercontent.com/twotwoba/DevPilot-Hook/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/devpilot-app/hook/main/install.sh | sh
 ```
 
 > `twotwoba/devpilot` is a third-party tap backed by the GitHub repo

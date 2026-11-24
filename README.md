@@ -49,6 +49,9 @@ curl -fsSL https://raw.githubusercontent.com/devpilot-app/hook/main/install.sh |
 > repositories. moshi's `rjyo/moshi` works the same way against
 > `rjyo/homebrew-moshi`. The tap only needs to be added once; afterwards
 > `brew upgrade --cask devpilot-hook` is enough.
+>
+> On recent Homebrew versions a third-party tap must be trusted once:
+> `brew trust devpilot-app/devpilot`.
 
 On Linux you can also grab `.deb` / `.rpm` / `.tar.gz` from Releases directly.
 

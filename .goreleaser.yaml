@@ -64,6 +64,11 @@ homebrew_casks:
           on_macos do
             run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/devpilot-hook"]
           end
+          # 升级换掉二进制后，launchd 缓存的代码签名要求仍绑在旧 build 上，
+          # 已注册的 agent 会以 OS_REASON_CODESIGNING 被拒；重装 cask 时自动重新注册服务。
+          on_macos do
+            run "/bin/sh", args: ["-c", "if [ -f \"$HOME/Library/LaunchAgents/com.twotwoba.devpilot-hook.plist\" ]; then command -v devpilot-hook >/dev/null && devpilot-hook service install; fi"]
+          end
 
 # Linux：deb / rpm 便于服务器与桌面无人值守安装。
 nfpms:

@@ -66,7 +66,34 @@ type Server struct {
 
 	mu   sync.Mutex
 	addr string
+
+	// anchors 是会话锚点缓存（session_id → 归属），见 sessionAnchor。
+	anchorMu sync.Mutex
+	anchors  map[string]sessionAnchor
 }
+
+// sessionAnchor 是一条 agent 会话的稳定归属：项目根 + tmux 坐标。
+//
+// hook 对每个事件都现探 tmux，但探测会失败（引擎后台化后进程树脱离
+// tmux、ps/tmux 偶发失败）——失败一次，那张卡的 Answer at Terminal 就没有
+// 坐标，App 只能新开同名会话跑 resume fork、进错会话。而 agent 进程在
+// 会话期间不搬家：它的 tmux 窗格是会话级常量。会话内探到的坐标缓存
+// 起来，后续事件探空时兜底。
+type sessionAnchor struct {
+	projectDir string
+	tmux       tmuxAnchor
+	seen       time.Time
+}
+
+// tmuxAnchor 是 tmux 定位坐标（会话名 / 窗口号 / 窗格 id）。
+type tmuxAnchor struct{ session, window, pane string }
+
+const (
+	// anchorTTL 是会话锚点的保留期：覆盖最长的审批等待窗（6h）再留余量。
+	anchorTTL = 12 * time.Hour
+	// anchorSweepThreshold 是触发过期清扫的缓存条数（按会话数计，很小）。
+	anchorSweepThreshold = 256
+)
 
 // New 校验依赖并创建网关。
 func New(p Params) (*Server, error) {
@@ -99,6 +126,7 @@ func New(p Params) (*Server, error) {
 		throttle: event.NewThrottle(p.ToolEventInterval),
 		log:      p.Logger,
 		addr:     p.Addr,
+		anchors:  make(map[string]sessionAnchor),
 	}, nil
 }
 
@@ -227,6 +255,10 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := s.p.Now()
+	// 会话归属先于事件构造：标题取项目根，不能等 payload 生成完再补。
+	anchor := s.resolveAnchor(r, in.SessionID, now)
+	in.ProjectDir = anchor.projectDir
+
 	// 选项作答默认开（主路径特性），配置侧 disable_answer_questions 显式关闭。
 	ev, err := adapter.Normalize(in, s.p.DaemonID, now.Unix(), s.p.ApprovalMode, !s.p.DisableAnswerQuestions)
 	if err != nil {
@@ -238,7 +270,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	env := ev.Envelope
-	s.stampHostContext(r, &env, in)
+	s.stampHostContext(&env, in, anchor)
 
 	// 高频工具遥测做固定窗口节流；审批、任务完成、会话边界永不丢弃。
 	if env.Type == wire.EventToolRunning || env.Type == wire.EventToolFinished {
@@ -249,6 +281,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	if env.Type == wire.EventSessionEnded {
 		s.throttle.Forget(env.SessionID + ":")
+		s.forgetAnchor(env.SessionID)
 	}
 
 	if !ev.NeedsApproval {
@@ -292,10 +325,10 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 
 // stampHostContext 把主机身份与会话上下文盖进事件 payload:
 // hostname/host_ip/user/cwd 供 App 收件箱路由(匹配 HostRecord → 直进会话);
-// tmux 会话名来自 hook 子进程的专用 header(审批候选与 Stop 事件探测);
+// project_dir 与 tmux 坐标来自会话锚点(本次探测命中，或会话缓存兜底);
 // approval_required 额外盖 expires_at——等待窗终点,relay pending TTL、
 // APNs 过期、LA 倒计时全链对齐这一处时间源。
-func (s *Server) stampHostContext(r *http.Request, env *wire.Envelope, in agent.Input) {
+func (s *Server) stampHostContext(env *wire.Envelope, in agent.Input, anchor sessionAnchor) {
 	if s.p.HostInfo != nil {
 		h := s.p.HostInfo()
 		env.Payload.Hostname = h.Hostname
@@ -303,16 +336,84 @@ func (s *Server) stampHostContext(r *http.Request, env *wire.Envelope, in agent.
 		env.Payload.User = h.User
 	}
 	env.Payload.Cwd = in.Cwd
-	if ts := strings.TrimSpace(r.Header.Get("X-DevPilot-Tmux-Session")); ts != "" {
-		env.Payload.TmuxSession = ts
+	if anchor.projectDir != "" {
+		env.Payload.ProjectDir = anchor.projectDir
 	}
-	// tmux 窗口号(v0.3.1):与 session 同源探测,App 详情抽屉展示;仅
-	// 探测名单事件有 header,工具遥测事件天然不带
-	if w := strings.TrimSpace(r.Header.Get("X-DevPilot-Tmux-Window")); w != "" {
-		env.Payload.TmuxWindow = w
+	// tmux 窗口号(v0.3.1)与窗格 id:与 session 同源探测,App 详情抽屉展示
+	// / 直达时定位;仅探测名单事件有 header,工具遥测事件天然不带。
+	if anchor.tmux.session != "" {
+		env.Payload.TmuxSession = anchor.tmux.session
+		env.Payload.TmuxWindow = anchor.tmux.window
+		env.Payload.TmuxPane = anchor.tmux.pane
 	}
 	if env.Type == wire.EventApprovalRequired {
 		env.ExpiresAt = s.p.Now().Unix() + int64(s.p.ApprovalTimeout/time.Second)
+	}
+}
+
+// resolveAnchor 合并本次事件的 header 与会话缓存，返回该会话的归属：
+//   - header 带了 tmux 坐标 / 项目根 → 以它为准并刷新缓存（探到了就是
+//     最新真值）；
+//   - header 没带而缓存仍在保留期内 → 用缓存兜底；
+//   - 两者皆空（会话真的不在 tmux 附近）→ 空锚点，宁缺毋滥。
+//
+// 旧版 hook（不带 X-DevPilot-Project-Dir / X-DevPilot-Tmux-Pane）照常工作。
+func (s *Server) resolveAnchor(r *http.Request, sessionID string, now time.Time) sessionAnchor {
+	if sessionID == "" {
+		return sessionAnchor{projectDir: strings.TrimSpace(r.Header.Get("X-DevPilot-Project-Dir"))}
+	}
+	tmux := tmuxAnchor{
+		session: strings.TrimSpace(r.Header.Get("X-DevPilot-Tmux-Session")),
+		window:  strings.TrimSpace(r.Header.Get("X-DevPilot-Tmux-Window")),
+		pane:    strings.TrimSpace(r.Header.Get("X-DevPilot-Tmux-Pane")),
+	}
+	if tmux.session == "" {
+		// 没有会话名时窗口号/窗格 id 无处可挂，不单独带出。
+		tmux = tmuxAnchor{}
+	}
+	anchor := sessionAnchor{
+		projectDir: strings.TrimSpace(r.Header.Get("X-DevPilot-Project-Dir")),
+		tmux:       tmux,
+		seen:       now,
+	}
+
+	s.anchorMu.Lock()
+	defer s.anchorMu.Unlock()
+	cached, ok := s.anchors[sessionID]
+	if !ok || now.Sub(cached.seen) > anchorTTL {
+		cached = sessionAnchor{}
+	}
+	if anchor.projectDir == "" {
+		anchor.projectDir = cached.projectDir
+	}
+	if anchor.tmux.session == "" {
+		anchor.tmux = cached.tmux
+	}
+	if anchor.projectDir == "" && anchor.tmux.session == "" {
+		delete(s.anchors, sessionID)
+		return anchor
+	}
+	s.anchors[sessionID] = anchor
+	s.pruneAnchorsLocked(now)
+	return anchor
+}
+
+// forgetAnchor 在会话结束后清掉锚点（会话 id 不复用，留着只会占位）。
+func (s *Server) forgetAnchor(sessionID string) {
+	s.anchorMu.Lock()
+	delete(s.anchors, sessionID)
+	s.anchorMu.Unlock()
+}
+
+// pruneAnchorsLocked 清掉过期锚点；条数不多时跳过（调用方持锁）。
+func (s *Server) pruneAnchorsLocked(now time.Time) {
+	if len(s.anchors) < anchorSweepThreshold {
+		return
+	}
+	for id, a := range s.anchors {
+		if now.Sub(a.seen) > anchorTTL {
+			delete(s.anchors, id)
+		}
 	}
 }
 

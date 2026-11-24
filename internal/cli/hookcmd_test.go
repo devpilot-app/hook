@@ -292,6 +292,36 @@ func TestHookTmuxHeaderInjected(t *testing.T) {
 	}
 }
 
+// TestParseTmuxDisplay display-message 输出（"#S #{window_index} #{pane_id}"）：
+// 行尾窗格 id 先摘掉再按会话名+窗口号解析；没有窗格段时与 parseTmuxInfo 等价。
+func TestParseTmuxDisplay(t *testing.T) {
+	cases := []struct {
+		name    string
+		line    string
+		session string
+		window  string
+		pane    string
+	}{
+		{"带窗格 id", "0 0 %0", "0", "0", "%0"},
+		{"会话名含空格 + 窗格 id", "my session 3 %12", "my session", "3", "%12"},
+		{"旧 tmux 无窗格 id", " main 2 ", "main", "2", ""},
+		// 形态不符的尾段走 parseTmuxInfo 既有规则：非数字尾段不算窗口号，
+		// 余下保留为会话名。
+		{"窗格段形态不符不摘", "main 2 %x", "main 2", "", ""},
+		{"只有会话名与窗格 id 不摘", "%3", "%3", "", ""},
+		{"空行", "", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseTmuxDisplay(tc.line)
+			if got.session != tc.session || got.window != tc.window || got.pane != tc.pane {
+				t.Fatalf("parseTmuxDisplay(%q) = {%q %q %q}, want {%q %q %q}",
+					tc.line, got.session, got.window, got.pane, tc.session, tc.window, tc.pane)
+			}
+		})
+	}
+}
+
 // TestParseTmuxInfo 解析规则:会话名可含空格——行尾最后一个空格分隔
 // token 为窗口号(全数字校验),其余全量保留。
 func TestParseTmuxInfo(t *testing.T) {
@@ -409,6 +439,7 @@ func TestHookTmuxProbeEventWhitelist(t *testing.T) {
 		probe     bool
 	}{
 		{"permission_request 默认模式", "PermissionRequest", "", "", true},
+		{"session_start 建会话锚点", "SessionStart", "", "", true},
 		{"stop 回合结束 relay", "Stop", "", "", true},
 		{"pre_tool_use 审批模式", "PreToolUse", "", string(config.ApprovalModePreToolUse), true},
 		{"问题卡 permission_request 模式", "PreToolUse", "AskUserQuestion", "", true},
@@ -591,6 +622,193 @@ func TestHookTmuxProjectProbeSessionIDHit(t *testing.T) {
 
 	if gotSession != "DevPilot" || gotWindow != "1" {
 		t.Fatalf("session/window header = %q:%q, want DevPilot:1(session id 精确归属)", gotSession, gotWindow)
+	}
+}
+
+// TestParsePaneListPaneID list-panes 第 4 列是窗格 id：命中行带上它；缺列
+// 或形态不符时窗格为空，会话名/窗口号照常。
+func TestParsePaneListPaneID(t *testing.T) {
+	cases := []struct {
+		name    string
+		out     string
+		tty     string
+		session string
+		window  string
+		pane    string
+	}{
+		{"带窗格 id", "/dev/ttys019\tmain\t2\t%7\n", "ttys019", "main", "2", "%7"},
+		{"无窗格 id 列(旧输出)", "/dev/ttys019\tmain\t2\n", "ttys019", "main", "2", ""},
+		{"窗格段形态不符", "/dev/ttys019\tmain\t2\tx7\n", "ttys019", "main", "2", ""},
+		{"会话名含空格 + 窗格 id", "ttys004\tmy work\t0\t%0\n", "ttys004", "my work", "0", "%0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parsePaneList(tc.out, tc.tty)
+			if got.session != tc.session || got.window != tc.window || got.pane != tc.pane {
+				t.Fatalf("parsePaneList = {%q %q %q}, want {%q %q %q}",
+					got.session, got.window, got.pane, tc.session, tc.window, tc.pane)
+			}
+		})
+	}
+}
+
+// TestSameProjectPath cwd 预筛的路径规则：全等，或 pane 目录位于项目根之下
+// （分量边界）；pane 目录是项目根的祖先不算（防上层目录的 claude 冒领）。
+func TestSameProjectPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		pane    string
+		project string
+		want    bool
+	}{
+		{"全等", "/repo", "/repo", true},
+		{"pane 在项目根的子目录", "/repo/packages/app", "/repo", true},
+		{"macOS realpath 归一", "/private/repo/sub/", "/repo/sub", true},
+		{"pane 是项目根的祖先不算", "/repo", "/repo/packages/app", false},
+		{"分量前缀相同不算", "/repo-other", "/repo", false},
+		{"无关目录", "/elsewhere", "/repo", false},
+		{"空目标", "/repo", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameProjectPath(tc.pane, tc.project); got != tc.want {
+				t.Fatalf("sameProjectPath(%q, %q) = %v, want %v", tc.pane, tc.project, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParsePaneProjectRowsPaneAndSubdir 深探预筛带上窗格 id 列，并接受
+// 「pane 目录在项目根之下」的命中（agent 从仓库子目录启动）。
+func TestParsePaneProjectRowsPaneAndSubdir(t *testing.T) {
+	out := "main\t2\t/repo/packages/app\t1\t1\t50\t4242\t%3\n" +
+		"other\t0\t/elsewhere\t1\t1\t60\t9\t%9\n"
+	rows := parsePaneProjectRows(out, "/repo")
+	if len(rows) != 1 {
+		t.Fatalf("候选数 = %d, want 1（只有项目根之下的 pane）: %+v", len(rows), rows)
+	}
+	if rows[0].info != (tmuxInfo{session: "main", window: "2", pane: "%3"}) {
+		t.Fatalf("候选 = %+v, want main:2 pane %%3", rows[0].info)
+	}
+}
+
+// TestHookTmuxPaneHeaderInjected 窗格 id 随会话名/窗口号一起经 header 透传。
+func TestHookTmuxPaneHeaderInjected(t *testing.T) {
+	bin := t.TempDir()
+	stub := "#!/bin/sh\necho ' main 2 %7 '\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "/tmp/tmux-501/default,123,0")
+
+	var session, window, pane string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session = r.Header.Get("X-DevPilot-Tmux-Session")
+		window = r.Header.Get("X-DevPilot-Tmux-Window")
+		pane = r.Header.Get("X-DevPilot-Tmux-Pane")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	paths, _ := newTestPaths(t, portOf(t, srv.URL))
+	var stdout, stderr bytes.Buffer
+	runHook([]string{"--dir", paths.Dir, "claude"},
+		strings.NewReader(`{"session_id":"s1","hook_event_name":"Stop"}`), &stdout, &stderr)
+
+	// 有控制 tty 祖先时先走 list-panes（桩输出无 tab，不命中）再回落
+	// display-message；两条路径都出同一个窗格 id。
+	if session != "main" || window != "2" {
+		t.Fatalf("session/window header = %q:%q, want main:2", session, window)
+	}
+	if pane != "%7" {
+		t.Fatalf("tmux pane header = %q, want %%7", pane)
+	}
+}
+
+// TestHookProjectDirHeaderInjected CLAUDE_PROJECT_DIR 随每个事件带给网关
+// （标题与会话归属以它为准）；环境变量缺席时不带 header，网关回落 cwd。
+func TestHookProjectDirHeaderInjected(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     string
+		project string
+	}{
+		{"在位", "/Users/eric/Desktop/DevPilot_App", "/Users/eric/Desktop/DevPilot_App"},
+		{"带空白被修剪", "  /Users/eric/Desktop/DevPilot_App\t", "/Users/eric/Desktop/DevPilot_App"},
+		{"缺席", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_PROJECT_DIR", tc.env)
+			var project string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				project = r.Header.Get("X-DevPilot-Project-Dir")
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+
+			paths, _ := newTestPaths(t, portOf(t, srv.URL))
+			var stdout, stderr bytes.Buffer
+			runHook([]string{"--dir", paths.Dir, "claude"},
+				strings.NewReader(`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash"}`),
+				&stdout, &stderr)
+			if project != tc.project {
+				t.Fatalf("project dir header = %q, want %q", project, tc.project)
+			}
+		})
+	}
+}
+
+// TestHookCwdDriftKeepsTmuxAnchor 2026-11-23 真机复刻：引擎后台化（$TMUX 空、
+// 无 tty 祖先），agent 跑过 `cd 子目录` 之后 hook 输入的 cwd 已漂走。有
+// CLAUDE_PROJECT_DIR 时深探仍按项目根命中 pane；没有它就只能回落漂移后的
+// cwd、探不出归属（旧行为）。
+func TestHookCwdDriftKeepsTmuxAnchor(t *testing.T) {
+	driftedCwd := "/tmp/proj-root/packages/app"
+	run := func(t *testing.T, projectDirEnv string) string {
+		t.Helper()
+		bin := t.TempDir()
+		tmuxStub := "#!/bin/sh\ncase \"$*\" in\n" +
+			"*list-panes*)" +
+			"printf '0\\t0\\t/tmp/proj-root\\t1\\t1\\t50\\t4242\\t%%0\\n';;\n" +
+			"*)echo 'WRONG';;\nesac\n"
+		if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		psStub := "#!/bin/sh\ncat <<'EOF'\n  4242       1 -zsh\n  4243    4242 claude\nEOF\n"
+		if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(psStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("TMUX", "")
+		t.Setenv("CLAUDE_PROJECT_DIR", projectDirEnv)
+
+		var session, window, pane, project string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			session = r.Header.Get("X-DevPilot-Tmux-Session")
+			window = r.Header.Get("X-DevPilot-Tmux-Window")
+			pane = r.Header.Get("X-DevPilot-Tmux-Pane")
+			project = r.Header.Get("X-DevPilot-Project-Dir")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		paths, _ := newTestPaths(t, portOf(t, srv.URL))
+		var stdout, stderr bytes.Buffer
+		runHook([]string{"--dir", paths.Dir, "claude"},
+			strings.NewReader(`{"session_id":"s1","hook_event_name":"PermissionRequest","cwd":"`+driftedCwd+`"}`),
+			&stdout, &stderr)
+		if project != projectDirEnv {
+			t.Fatalf("project dir header = %q, want %q", project, projectDirEnv)
+		}
+		return session + ":" + window + ":" + pane
+	}
+
+	if got := run(t, "/tmp/proj-root"); got != "0:0:%0" {
+		t.Fatalf("有 CLAUDE_PROJECT_DIR 时 cwd 漂移不得丢锚点，实际 session:window:pane = %q", got)
+	}
+	if got := run(t, ""); got != "::" {
+		t.Fatalf("无 CLAUDE_PROJECT_DIR 且 cwd 已漂走时探不出归属（预期），实际 %q", got)
 	}
 }
 

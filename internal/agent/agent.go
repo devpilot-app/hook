@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
 	"github.com/twotwoba/DevPilot-Hook/internal/config"
@@ -24,10 +25,15 @@ const ReplySummaryRunes = 2000
 //
 // 两个 Agent 的字段高度重合；这里保留 camelCase 别名以兼容不同版本。
 type Input struct {
-	SessionID            string          `json:"session_id"`
-	SessionIDCamel       string          `json:"sessionId"`
-	TranscriptPath       string          `json:"transcript_path"`
-	Cwd                  string          `json:"cwd"`
+	SessionID      string `json:"session_id"`
+	SessionIDCamel string `json:"sessionId"`
+	TranscriptPath string `json:"transcript_path"`
+	Cwd            string `json:"cwd"`
+	// ProjectDir 是会话启动时的项目根（Claude Code 导出到 hook 进程的
+	// CLAUDE_PROJECT_DIR，由 CLI 经网关 header 转交；不出现在 hook 输入
+	// JSON 里）。它整个会话不变，而 Cwd「跟随 Claude 的 cd」（Claude Code
+	// 官方文档）——标题与会话归属必须以它为准，Cwd 只作回落。
+	ProjectDir           string          `json:"-"`
 	HookEventName        string          `json:"hook_event_name"`
 	ToolName             string          `json:"tool_name"`
 	ToolInput            json.RawMessage `json:"tool_input"`
@@ -87,19 +93,32 @@ type Adapter interface {
 }
 
 // BasePayload 生成所有事件共有的摘要字段。
+//
+// 标题取会话项目根（ProjectDir）的目录名，缺位才回落 Cwd：Cwd 会跟随
+// agent 的 `cd`，拿它当标题，同一条会话后半程的卡片会集体改姓（2026-11-23
+// 真机：一条会话先叫 DevPilot_App、跑过 `cd …/DevPilot-Hook` 之后全变
+// DevPilot-Hook）。
 func BasePayload(in Input) wire.Payload {
 	title := "Agent session"
-	if in.Cwd != "" {
-		if base := filepath.Base(in.Cwd); base != "." && base != string(filepath.Separator) {
-			title = base
-		}
+	if base := filepath.Base(ProjectRoot(in)); base != "." && base != string(filepath.Separator) {
+		title = base
 	}
 	title = wire.Truncate(title, wire.MaxTitleRunes)
-	p := wire.Payload{Title: title, SessionTitle: title}
+	p := wire.Payload{Title: title, SessionTitle: title, ProjectDir: strings.TrimSpace(in.ProjectDir)}
 	if in.Prompt != "" {
 		p.PromptSummary = wire.Summarize(in.Prompt, wire.MaxPromptRunes)
 	}
 	return p
+}
+
+// ProjectRoot 返回会话的项目根：ProjectDir 优先，缺位回落 Cwd，都没有为空。
+// hook 进程的当前目录（os.Getwd）绝不参与——hook 被 agent 以独立工作目录
+// 拉起，那里不是会话所在。
+func ProjectRoot(in Input) string {
+	if dir := strings.TrimSpace(in.ProjectDir); dir != "" {
+		return dir
+	}
+	return strings.TrimSpace(in.Cwd)
 }
 
 // WithTool 补充工具调用摘要（不含完整输入）。

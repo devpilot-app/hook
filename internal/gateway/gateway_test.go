@@ -120,16 +120,18 @@ func fixture(t *testing.T, name string) []byte {
 }
 
 type reqOpts struct {
-	token   string
-	origin  string
-	host    string
-	agent   string
-	body    []byte
-	method  string
-	path    string
-	noBody  bool
-	tmux    string
-	tmuxWin string
+	token      string
+	origin     string
+	host       string
+	agent      string
+	body       []byte
+	method     string
+	path       string
+	noBody     bool
+	tmux       string
+	tmuxWin    string
+	tmuxPane   string
+	projectDir string
 }
 
 func (e *testEnv) do(t *testing.T, o reqOpts) (*http.Response, []byte) {
@@ -163,6 +165,12 @@ func (e *testEnv) do(t *testing.T, o reqOpts) (*http.Response, []byte) {
 	}
 	if o.tmuxWin != "" {
 		req.Header.Set("X-DevPilot-Tmux-Window", o.tmuxWin)
+	}
+	if o.tmuxPane != "" {
+		req.Header.Set("X-DevPilot-Tmux-Pane", o.tmuxPane)
+	}
+	if o.projectDir != "" {
+		req.Header.Set("X-DevPilot-Project-Dir", o.projectDir)
 	}
 	resp, err := e.http.Client().Do(req)
 	if err != nil {
@@ -451,8 +459,118 @@ func TestHostContextStamped(t *testing.T) {
 	if tool.Payload.Hostname != "eric-mbp.lan" || tool.Payload.Cwd == "" {
 		t.Fatalf("工具事件应带主机身份: %+v", tool.Payload)
 	}
-	if tool.ExpiresAt != 0 || tool.Payload.TmuxSession != "" || tool.Payload.TmuxWindow != "" {
-		t.Fatalf("工具事件不应盖 expires_at/tmux: %+v", tool)
+	if tool.ExpiresAt != 0 {
+		t.Fatalf("工具事件不应盖 expires_at: %+v", tool)
+	}
+	// tmux 坐标来自会话锚点缓存：本事件没带 header，沿用同会话上一次探到
+	// 的 main:2——探测偶发失败不再让后续事件丢坐标。
+	if tool.Payload.TmuxSession != "main" || tool.Payload.TmuxWindow != "2" {
+		t.Fatalf("工具事件应沿用会话锚点缓存的 tmux 坐标: %+v", tool.Payload)
+	}
+}
+
+// TestSessionAnchorCacheFallback 会话锚点缓存（2026-11-23 真机：同一条会话
+// 第一条审批带坐标，agent 跑过 `cd 子目录` 之后第二条审批标题漂成子目录名、
+// tmux 坐标全丢）。会话内后续事件即使没探到坐标、cwd 已漂走，也必须沿用
+// 会话的项目根与 tmux 坐标。
+func TestSessionAnchorCacheFallback(t *testing.T) {
+	e := newTestEnv(t, 2*time.Minute, 0)
+	body := func(sessionID, hookEvent, cwd string) []byte {
+		return []byte(`{"session_id":"` + sessionID + `","hook_event_name":"` + hookEvent +
+			`","tool_name":"Bash","cwd":"` + cwd + `"}`)
+	}
+
+	// 会话第一条事件：带项目根与 tmux 坐标（含窗格 id）。
+	resp, respBody := e.do(t, reqOpts{agent: "claude", token: testToken,
+		tmux: "0", tmuxWin: "0", tmuxPane: "%0", projectDir: "/Users/eric/Desktop/DevPilot_App",
+		body: body("sess_anchor", "SessionStart", "/Users/eric/Desktop/DevPilot_App")})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("SessionStart 状态 = %d %s", resp.StatusCode, respBody)
+	}
+	first := e.wal.Pending()[e.wal.Len()-1]
+	if first.Payload.TmuxSession != "0" || first.Payload.TmuxWindow != "0" || first.Payload.TmuxPane != "%0" {
+		t.Fatalf("首事件应带全量 tmux 坐标: %+v", first.Payload)
+	}
+	if first.Payload.ProjectDir != "/Users/eric/Desktop/DevPilot_App" {
+		t.Fatalf("project_dir = %q", first.Payload.ProjectDir)
+	}
+
+	// 同会话后续事件：探测落空（无 header）、cwd 已跟随 `cd` 漂到子目录。
+	resp, respBody = e.do(t, reqOpts{agent: "claude", token: testToken,
+		body: body("sess_anchor", "PreToolUse", "/Users/eric/Desktop/DevPilot_App/DevPilot-Hook")})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("后续事件状态 = %d %s", resp.StatusCode, respBody)
+	}
+	later := e.wal.Pending()[e.wal.Len()-1]
+	if later.Payload.TmuxSession != "0" || later.Payload.TmuxWindow != "0" || later.Payload.TmuxPane != "%0" {
+		t.Fatalf("探测落空应沿用会话锚点缓存的 tmux 坐标: %+v", later.Payload)
+	}
+	if later.Payload.ProjectDir != "/Users/eric/Desktop/DevPilot_App" {
+		t.Fatalf("project_dir 应沿用缓存: %q", later.Payload.ProjectDir)
+	}
+	// 标题跟项目根走，不跟漂移后的 cwd；cwd 字段本身如实保留。
+	if later.Payload.SessionTitle != "DevPilot_App" {
+		t.Fatalf("标题漂移: %q, want DevPilot_App", later.Payload.SessionTitle)
+	}
+	if later.Payload.Cwd != "/Users/eric/Desktop/DevPilot_App/DevPilot-Hook" {
+		t.Fatalf("cwd 应如实保留: %q", later.Payload.Cwd)
+	}
+}
+
+// TestProjectDirHeaderDrivesTitle 没有 SessionStart（daemon 重启后接手老会话）
+// 时，仅凭项目根 header 也要稳住标题与归属。
+func TestProjectDirHeaderDrivesTitle(t *testing.T) {
+	// PermissionRequest 会在网关里等决策：短超时让请求立刻以 204 收场。
+	e := newTestEnv(t, 50*time.Millisecond, 0)
+	resp, respBody := e.do(t, reqOpts{agent: "claude", token: testToken,
+		projectDir: "/Users/eric/Desktop/DevPilot_App",
+		body: []byte(`{"session_id":"sess_title","hook_event_name":"PermissionRequest","tool_name":"Bash",` +
+			`"cwd":"/Users/eric/Desktop/DevPilot_App/DevPilot-APNS"}`)})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("状态 = %d %s", resp.StatusCode, respBody)
+	}
+	approvals := e.pub.eventsOfType(wire.EventApprovalRequired)
+	if len(approvals) != 1 {
+		t.Fatalf("approval_required 事件数 = %d, want 1", len(approvals))
+	}
+	env := approvals[0]
+	if env.Payload.SessionTitle != "DevPilot_App" {
+		t.Fatalf("标题 = %q, want 项目根目录名 DevPilot_App", env.Payload.SessionTitle)
+	}
+	if env.Payload.ProjectDir != "/Users/eric/Desktop/DevPilot_App" {
+		t.Fatalf("project_dir = %q", env.Payload.ProjectDir)
+	}
+}
+
+// TestAnchorIsolationAcrossSessions 锚点按 session_id 隔离：另一条会话不得
+// 捡到本会话的坐标。
+func TestAnchorIsolationAcrossSessions(t *testing.T) {
+	e := newTestEnv(t, 2*time.Minute, 0)
+	body := []byte(`{"session_id":"sess_owner","hook_event_name":"SessionStart","cwd":"/tmp/p"}`)
+	e.do(t, reqOpts{agent: "claude", token: testToken, tmux: "0", tmuxWin: "3", body: body})
+	resp, respBody := e.do(t, reqOpts{agent: "claude", token: testToken,
+		body: []byte(`{"session_id":"sess_other","hook_event_name":"SessionStart","cwd":"/tmp/q"}`)})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("状态 = %d %s", resp.StatusCode, respBody)
+	}
+	other := e.wal.Pending()[e.wal.Len()-1]
+	if other.Payload.TmuxSession != "" || other.Payload.TmuxWindow != "" {
+		t.Fatalf("别的会话不得继承本会话的 tmux 锚点: %+v", other.Payload)
+	}
+}
+
+// TestSessionEndForgetsAnchor 会话结束后锚点清掉：同一个 session id 日后
+// 若被复用，不得捡到旧坐标。
+func TestSessionEndForgetsAnchor(t *testing.T) {
+	e := newTestEnv(t, 2*time.Minute, 0)
+	body := []byte(`{"session_id":"sess_end","hook_event_name":"SessionStart","cwd":"/tmp/p"}`)
+	e.do(t, reqOpts{agent: "claude", token: testToken, tmux: "0", tmuxWin: "1", body: body})
+	e.do(t, reqOpts{agent: "claude", token: testToken,
+		body: []byte(`{"session_id":"sess_end","hook_event_name":"SessionEnd","cwd":"/tmp/p"}`)})
+	e.do(t, reqOpts{agent: "claude", token: testToken, body: body})
+	again := e.wal.Pending()[e.wal.Len()-1]
+	if again.Payload.TmuxSession != "" {
+		t.Fatalf("会话结束后锚点应清除，实际仍带 tmux=%q", again.Payload.TmuxSession)
 	}
 }
 

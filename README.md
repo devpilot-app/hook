@@ -32,21 +32,25 @@ macOS and Linux only (same scope as moshi-hook; no Windows).
 
 ```bash
 # macOS (Homebrew — the same tap + install two-step as moshi)
-brew tap twotwoba/devpilot
+brew tap devpilot-app/devpilot
 brew install --cask devpilot-hook
 
 # Or in one command (Homebrew clones the tap automatically)
-brew install --cask twotwoba/devpilot/devpilot-hook
+brew install --cask devpilot-app/devpilot/devpilot-hook
 
 # macOS / Linux (script: verifies SHA-256, installs to ~/.local/bin)
 curl -fsSL https://raw.githubusercontent.com/devpilot-app/hook/main/install.sh | sh
 ```
 
-> `twotwoba/devpilot` is a third-party tap backed by the GitHub repo
-> `twotwoba/homebrew-devpilot`; it is not part of the official Homebrew
+> `devpilot-app/devpilot` is a third-party tap backed by the GitHub repo
+> `devpilot-app/homebrew-devpilot`; it is not part of the official Homebrew
 > repositories. moshi's `rjyo/moshi` works the same way against
 > `rjyo/homebrew-moshi`. The tap only needs to be added once; afterwards
 > `brew upgrade --cask devpilot-hook` is enough.
+>
+> Already on the old personal tap? Re-tap once:
+> `brew untap twotwoba/devpilot && brew tap devpilot-app/devpilot`, then
+> `brew upgrade --cask devpilot-hook`.
 
 On Linux you can also grab `.deb` / `.rpm` / `.tar.gz` from Releases directly.
 

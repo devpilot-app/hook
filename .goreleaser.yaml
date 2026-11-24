@@ -44,7 +44,7 @@ checksum:
 homebrew_casks:
   - name: devpilot-hook
     repository:
-      owner: twotwoba
+      owner: devpilot-app
       name: homebrew-devpilot
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks

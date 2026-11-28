@@ -1,0 +1,11 @@
+{
+  "hookEventName": "pre_tool_use",
+  "sessionId": "grk-9c2d41ab55e74f10",
+  "cwd": "/tmp/proj-x",
+  "workspaceRoot": "/tmp/proj-x",
+  "transcriptPath": "/Users/eric/.grok/sessions/9c2d41ab55e74f10.jsonl",
+  "permissionMode": "always-approve",
+  "toolName": "Bash",
+  "toolUseId": "call_7f2a91",
+  "toolInput": {"command": "npm test"}
+}

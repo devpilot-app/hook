@@ -34,7 +34,12 @@ type Approval struct {
 	// choice 是选项型审批所选的候选标签（可空）；allow/deny 语义之外的
 	// 附加信息，RenderDecision 据此生成喂回 agent 的理由文本。
 	choice string
-	done   chan struct{}
+	// external 标记「收场动作已由外部执行」（终端里答完后的 CancelExternal
+	// 路径）：close 事件由收场方发出，Wait 路径不得重复发，否则同一个
+	// approval_id 会出现 cancelled + expired 两条 close（relay 去重窗只有
+	// 10 分钟，挡不住 30 分钟后的 timer）。
+	external bool
+	done     chan struct{}
 }
 
 // Result 是 Wait 的返回值。
@@ -43,6 +48,9 @@ type Result struct {
 	Decision wire.DecisionKind
 	// Choice 随决策带回（选项型审批所选标签，无则空串）。
 	Choice string
+	// External=true 表示审批已被外部收场（终端答完），close 已由收场方
+	// 发出：调用方应静默返回 204，不再 emitClose、也不渲染决策。
+	External bool
 }
 
 // DecideResult 是 Decide 的返回值。
@@ -90,6 +98,7 @@ func (r *Registry) Add(env wire.Envelope, now time.Time, ttl time.Duration) (*Ap
 // Wait 阻塞直到决策到达、超时或调用方取消。
 //
 // 超时只产生 expired；调用方断开产生 cancelled。两者都意味着「无决策」。
+// 终端里已答完（CancelExternal）会关闭 done 让本调用立即返回真实终态。
 func (r *Registry) Wait(ctx context.Context, id string) Result {
 	r.mu.Lock()
 	a, ok := r.items[id]
@@ -98,7 +107,7 @@ func (r *Registry) Wait(ctx context.Context, id string) Result {
 		return Result{Status: StatusUnknown}
 	}
 	if a.status != StatusPending {
-		res := Result{Status: a.status, Decision: a.decision, Choice: a.choice}
+		res := Result{Status: a.status, Decision: a.decision, Choice: a.choice, External: a.external}
 		r.mu.Unlock()
 		return res
 	}
@@ -109,17 +118,25 @@ func (r *Registry) Wait(ctx context.Context, id string) Result {
 
 	select {
 	case <-a.done:
-		r.mu.Lock()
-		res := Result{Status: a.status, Decision: a.decision, Choice: a.choice}
-		r.mu.Unlock()
-		return res
+		// done 关闭可能来自手机决策、外部收场或另一路 finish；读锁内真实
+		// 状态，不臆测。
+		return r.resultOf(a)
 	case <-timer.C:
+		// 与 CancelExternal/Decide 存在竞态：finish 可能是 no-op（别人先
+		// 收场了），必须回读实际状态，否则外部收场后会错发 expired close。
 		r.finish(a, StatusExpired, "", "")
-		return Result{Status: StatusExpired}
+		return r.resultOf(a)
 	case <-ctx.Done():
 		r.finish(a, StatusCancelled, "", "")
-		return Result{Status: StatusCancelled}
+		return r.resultOf(a)
 	}
+}
+
+// resultOf 在锁内构造快照。要求 a 仍在本注册表中（Wait 的调用约定保证）。
+func (r *Registry) resultOf(a *Approval) Result {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return Result{Status: a.status, Decision: a.decision, Choice: a.choice, External: a.external}
 }
 
 // Decide 提交手机决策；first-wins。choice 是选项型审批的所选标签（可空），
@@ -169,12 +186,79 @@ func (r *Registry) Cancel(id string) {
 	}
 }
 
+// CancelExternal 外部收场：终端里已答完（PostToolUse / Stop / SessionEnd
+// 对账），审批不再等待手机决策。仅 pending 时生效；close 事件由调用方用
+// 返回的存量 envelope 构造（保留 title / tmux / hostname 线索，I8），本方法
+// 只负责置位并唤醒阻塞中的 Wait（done 关闭 → Wait 立即返回 External=true，
+// hookcmd 输出空 204：原生弹窗已答完，不能渲染任何决策）。
+func (r *Registry) CancelExternal(id string) (wire.Envelope, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.items[id]
+	if !ok || a.status != StatusPending {
+		return wire.Envelope{}, false
+	}
+	a.external = true
+	r.finishLocked(a, StatusCancelled, "", "")
+	return a.Envelope, true
+}
+
+// PendingInSession 返回某会话所有仍 pending 的审批 id，跳过比 cutoff 更晚
+// 创建的条目（Stop 对账传 now-宽限；SessionEnd 对账传 now，即宽限 0——
+// 全部命中）。
+func (r *Registry) PendingInSession(sessionID string, cutoff time.Time) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, a := range r.items {
+		if a.status != StatusPending || a.Envelope.SessionID != sessionID {
+			continue
+		}
+		if a.CreatedAt.After(cutoff) {
+			continue
+		}
+		out = append(out, a.ID)
+	}
+	return out
+}
+
+// PendingMatching 按 (session, tool, input_digest) 精确匹配仍 pending 的审批，
+// 供 PostToolUse 在 tool_use_id 关联缺失时兜底（Pre/Post 输入漂移）。找不到
+// 或多条命中时返回 false——多条命中说明关联键不可信，宁可留卡等 Stop sweep
+// 也不误收并行批次里另一条仍在弹窗的审批。
+func (r *Registry) PendingMatching(sessionID, toolName, digest string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var found string
+	for _, a := range r.items {
+		if a.status != StatusPending || a.Envelope.SessionID != sessionID {
+			continue
+		}
+		if a.Envelope.Payload.ToolName != toolName || a.Envelope.Payload.InputDigest != digest {
+			continue
+		}
+		if found != "" {
+			return "", false
+		}
+		found = a.ID
+	}
+	return found, found != ""
+}
+
 // Has 判断审批是否存在。
 func (r *Registry) Has(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.items[id]
 	return ok
+}
+
+// IsPending 判断审批是否存在且仍待决（CallIndex 清扫的失联判据）。
+func (r *Registry) IsPending(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.items[id]
+	return ok && a.status == StatusPending
 }
 
 // Len 返回当前保留的审批数量（含已结束但尚未清理的）。

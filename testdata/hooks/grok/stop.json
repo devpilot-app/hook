@@ -1,0 +1,9 @@
+{
+  "hookEventName": "stop",
+  "sessionId": "grk-9c2d41ab55e74f10",
+  "cwd": "/tmp/proj-x",
+  "workspaceRoot": "/tmp/proj-x",
+  "transcriptPath": "/Users/eric/.grok/sessions/9c2d41ab55e74f10.jsonl",
+  "reason": "end_turn",
+  "lastAssistantMessage": "All set — build green."
+}

@@ -1,0 +1,10 @@
+{
+  "session_id": "gem-4a1c8e22b7f34d09",
+  "transcript_path": "/tmp/gemini/4a1c8e22b7f34d09.jsonl",
+  "cwd": "/tmp/proj-x",
+  "hook_event_name": "AfterAgent",
+  "timestamp": "2026-11-28T10:01:30Z",
+  "prompt": "fix the tests",
+  "prompt_response": "Done — 2 tests fixed.",
+  "stop_hook_active": false
+}

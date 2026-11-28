@@ -1,0 +1,9 @@
+{
+  "session_id": "cur-sess-77e10a2d94f8",
+  "conversation_id": "cur-77e10a2d94f8",
+  "hook_event_name": "sessionStart",
+  "cursor_version": "2026.11.22",
+  "workspace_roots": ["/tmp/proj-x"],
+  "is_background_agent": false,
+  "composer_mode": "agent"
+}

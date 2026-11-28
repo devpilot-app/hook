@@ -1,0 +1,10 @@
+{
+  "session_id": "gem-4a1c8e22b7f34d09",
+  "transcript_path": "/tmp/gemini/4a1c8e22b7f34d09.jsonl",
+  "cwd": "/tmp/proj-x",
+  "hook_event_name": "Notification",
+  "timestamp": "2026-11-28T09:59:59Z",
+  "notification_type": "ToolPermission",
+  "message": "Gemini wants to run a shell command",
+  "details": {"type": "exec", "title": "npm test", "command": "npm test", "rootCommand": "npm"}
+}

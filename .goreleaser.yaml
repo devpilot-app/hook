@@ -49,7 +49,7 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
     homepage: https://github.com/devpilot-app/hook
-    description: DevPilot hook daemon for Claude Code / Codex
+    description: DevPilot hook daemon for coding agents (Claude Code, Codex, OpenCode, Gemini, Qwen, Grok, Cursor, Copilot)
     binaries:
       - devpilot-hook
     hooks:
@@ -77,7 +77,7 @@ nfpms:
     vendor: twotwoba
     homepage: https://github.com/devpilot-app/hook
     maintainer: twotwoba
-    description: DevPilot hook daemon for Claude Code / Codex
+    description: DevPilot hook daemon for coding agents (Claude Code, Codex, OpenCode, Gemini, Qwen, Grok, Cursor, Copilot)
     formats:
       - deb
       - rpm

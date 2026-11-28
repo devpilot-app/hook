@@ -14,10 +14,8 @@ import (
 	"time"
 
 	"github.com/devpilot-app/apns/pkg/wire"
+	adapterspkg "github.com/devpilot-app/hook/internal/adapters"
 	"github.com/devpilot-app/hook/internal/agent"
-	"github.com/devpilot-app/hook/internal/agent/claude"
-	"github.com/devpilot-app/hook/internal/agent/codex"
-	"github.com/devpilot-app/hook/internal/agent/opencode"
 	"github.com/devpilot-app/hook/internal/config"
 	"github.com/devpilot-app/hook/internal/event"
 	"github.com/devpilot-app/hook/internal/gateway"
@@ -66,11 +64,11 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	defer wal.Close()
 
 	reg := event.NewRegistry()
-	adapters := map[wire.Agent]agent.Adapter{
-		wire.AgentClaude:   claude.Adapter{},
-		wire.AgentCodex:    codex.Adapter{},
-		wire.AgentOpenCode: opencode.Adapter{},
-	}
+	// tool_use_id ↔ 审批的关联索引：gateway 记账、janitor 清扫，同一实例。
+	calls := event.NewCallIndex(0)
+	callsTTL := time.Duration(cfg.ApprovalTimeout)*time.Second + 10*time.Minute
+	adapters := adapterspkg.All()
+	adapters[wire.AgentOpenCode] = adapterspkg.OpenCode()
 
 	// brew 升级只换二进制、不重跑 install:hooks 文件里旧的超时(300s)会
 	// 让 30 分钟等待窗失效。启动时幂等重写自愈;失败只警告,不阻塞 serve。
@@ -106,6 +104,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		DisableAnswerQuestions: cfg.DisableAnswerQuestions,
 		Adapters:               adapters,
 		Registry:               reg,
+		Calls:                  calls,
 		WAL:                    wal,
 		Publisher:              publisher,
 		HostInfo:               hostInfo.Get,
@@ -124,7 +123,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go janitor(ctx, reg)
+	go janitor(ctx, reg, gw, callsTTL)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- gw.ListenAndServe(ctx) }()
@@ -143,7 +142,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		// 端口被占用时退回随机端口，并把实际端口写回配置。
 		if isAddrInUse(err) {
 			fmt.Fprintf(stderr, "port %d in use, falling back to a random port\n", cfg.GatewayPort)
-			return serveOnRandomPort(ctx, cfg, paths, token, wal, reg, adapters, publisher, hostInfo, timeout, stdout, stderr)
+			return serveOnRandomPort(ctx, cfg, paths, token, wal, reg, calls, adapters, publisher, hostInfo, timeout, stdout, stderr)
 		}
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -153,7 +152,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 // serveOnRandomPort 是端口冲突时的退化路径。
 func serveOnRandomPort(
 	ctx context.Context, cfg *config.Config, paths config.Paths, token string,
-	wal *queue.WAL, reg *event.Registry, adapters map[wire.Agent]agent.Adapter,
+	wal *queue.WAL, reg *event.Registry, calls *event.CallIndex,
+	adapters map[wire.Agent]agent.Adapter,
 	publisher gateway.Publisher, hostInfo *agent.HostInfoProvider,
 	timeout time.Duration, stdout, stderr io.Writer,
 ) int {
@@ -167,6 +167,7 @@ func serveOnRandomPort(
 		DisableAnswerQuestions: cfg.DisableAnswerQuestions,
 		Adapters:               adapters,
 		Registry:               reg,
+		Calls:                  calls,
 		WAL:                    wal,
 		Publisher:              publisher,
 		HostInfo:               hostInfo.Get,
@@ -236,22 +237,25 @@ func selfHealHooks(cfg *config.Config, stderr io.Writer) {
 			}
 			continue
 		}
-		path, err := agentConfigPath(name)
+		changed, err := installAgentHooks(name, exe, mode)
 		if err != nil {
+			fmt.Fprintf(stderr, "warning: hooks self-heal failed for %s: %v\n", name, err)
 			continue
 		}
-		changed, err := installHooksFile(path, name, exe, mode)
-		switch {
-		case err != nil:
-			fmt.Fprintf(stderr, "warning: hooks self-heal failed for %s: %v\n", name, err)
-		case changed:
+		if changed {
+			path, pathErr := agentConfigPath(name)
+			if pathErr != nil {
+				continue
+			}
 			fmt.Fprintf(stderr, "refreshed %s hooks (timeout %ds) -> %s\n",
 				name, config.DefaultApprovalTimeoutSeconds+60, path)
 		}
 	}
 }
 
-func janitor(ctx context.Context, reg *event.Registry) {
+// janitor 周期清理：Registry 过期翻转 + CallIndex TTL/失联清扫（与
+// Registry.Cleanup 同车次，300 tick 一次即可——索引稳态只有进行中的调用）。
+func janitor(ctx context.Context, reg *event.Registry, gw *gateway.Server, callsTTL time.Duration) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	cleanup := 0
@@ -261,6 +265,7 @@ func janitor(ctx context.Context, reg *event.Registry) {
 			return
 		case now := <-ticker.C:
 			reg.Expire(now)
+			gw.SweepCalls(now, callsTTL)
 			cleanup++
 			if cleanup%300 == 0 {
 				reg.Cleanup(now, 10*time.Minute)

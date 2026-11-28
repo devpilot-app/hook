@@ -1,0 +1,10 @@
+{
+  "session_id": "qwen-sess-3f2b9a10c4d74e819a2b",
+  "transcript_path": "/Users/eric/.qwen/projects/-tmp-proj/session-3f2b.jsonl",
+  "cwd": "/tmp/proj-x",
+  "hook_event_name": "PermissionRequest",
+  "permission_mode": "default",
+  "tool_name": "run_shell_command",
+  "tool_input": {"command": "npm test"},
+  "tool_use_id": "toolu_01hq8x2m"
+}

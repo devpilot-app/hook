@@ -1,0 +1,8 @@
+{
+  "session_id": "qwen-sess-3f2b9a10c4d74e819a2b",
+  "transcript_path": "/Users/eric/.qwen/projects/-tmp-proj/session-3f2b.jsonl",
+  "cwd": "/tmp/proj-x",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "qwen3-coder"
+}

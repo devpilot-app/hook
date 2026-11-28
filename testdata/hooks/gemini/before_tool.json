@@ -1,0 +1,9 @@
+{
+  "session_id": "gem-4a1c8e22b7f34d09",
+  "transcript_path": "/tmp/gemini/4a1c8e22b7f34d09.jsonl",
+  "cwd": "/tmp/proj-x",
+  "hook_event_name": "BeforeTool",
+  "timestamp": "2026-11-28T10:00:00Z",
+  "tool_name": "run_shell_command",
+  "tool_input": {"command": "gemini dir"}
+}

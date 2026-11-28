@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/devpilot-app/hook/internal/agent"
 	"github.com/devpilot-app/hook/internal/config"
 )
 
@@ -76,21 +77,26 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
+		changed, err := installAgentHooks(name, exe, mode)
+		if err != nil {
+			fmt.Fprintf(stderr, "failed to install %s hooks: %v\n", name, err)
+			return 1
+		}
 		path, err := agentConfigPath(name)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		changed, err := installHooksFile(path, name, exe, mode)
-		if err != nil {
-			fmt.Fprintf(stderr, "failed to install %s hooks: %v\n", name, err)
-			return 1
-		}
 		switch {
 		case changed:
-			fmt.Fprintf(stdout, "installed %s hooks -> %s (original backed up as .devpilot.bak)\n", name, path)
+			fmt.Fprintf(stdout, "installed %s hooks -> %s\n", name, path)
 		default:
 			fmt.Fprintf(stdout, "%s hooks already up to date -> %s\n", name, path)
+		}
+		// 闸门型 agent(Gemini/Grok)的 pre-tool-use 模式要求以免确认参数
+		// 启动,安装时把这句话说清楚——不说,用户会以为拦截没生效。
+		if prof, ok := agent.Lookup(name); ok && wantsGate(prof, mode) && prof.LaunchHint != "" {
+			fmt.Fprintf(stdout, "gate mode: launch %s with `%s` so DevPilot is the only gate\n", name, prof.LaunchHint)
 		}
 	}
 
@@ -138,7 +144,7 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		changed, err := uninstallHooksFile(path, name)
+		changed, err := uninstallAgentHooks(name)
 		if err != nil {
 			fmt.Fprintf(stderr, "failed to uninstall %s hooks: %v\n", name, err)
 			return 1

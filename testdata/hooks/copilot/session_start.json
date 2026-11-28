@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "cop-3d81f7c2aa64",
+  "cwd": "/tmp/proj-x",
+  "source": "startup"
+}

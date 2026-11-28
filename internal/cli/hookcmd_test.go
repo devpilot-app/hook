@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/devpilot-app/hook/internal/agent"
 	"github.com/devpilot-app/hook/internal/config"
 )
 
@@ -927,8 +928,8 @@ func TestPaneSubtreeMatch(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		pid, agent, sessionID string
-		want       subtreeMatch
-		note       string
+		want                  subtreeMatch
+		note                  string
 	}{
 		{"100", "claude", "cc07dd44-94e3-40d3-8e1a-5119769ecf6b", subtreeSession, "argv 含 session id = attach 视图"},
 		{"300", "claude", "cc07dd44-94e3-40d3-8e1a-5119769ecf6b", subtreeAgent, "agent 在但无会话证据"},
@@ -941,7 +942,11 @@ func TestPaneSubtreeMatch(t *testing.T) {
 		{"", "claude", "", subtreeNone, "pid 缺位"},
 		{"abc", "claude", "", subtreeNone, "非数字 pid"},
 	} {
-		if got := paneSubtreeMatch(ctx, tc.pid, tc.agent, tc.sessionID); got != tc.want {
+		prof, ok := agent.Lookup(tc.agent)
+		if !ok {
+			t.Fatalf("档案缺位: %s", tc.agent)
+		}
+		if got := paneSubtreeMatch(ctx, tc.pid, prof, tc.sessionID); got != tc.want {
 			t.Fatalf("%s: paneSubtreeMatch(%q,%q) = %v, want %v", tc.note, tc.pid, tc.sessionID, got, tc.want)
 		}
 	}

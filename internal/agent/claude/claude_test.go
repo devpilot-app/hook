@@ -144,43 +144,29 @@ func TestAskUserQuestionPermissionRequestDedupes(t *testing.T) {
 	}
 }
 
-// TestAskUserQuestionAnsweredClosesCard 终端答完后收卡:PostToolUse 用同一
-// tool_use_id + tool_input 重算 approval_id，发 cancelled close（App 侧
-// 据此盖 Answered at terminal），不依赖 daemon 内存关联表。
-func TestAskUserQuestionAnsweredClosesCard(t *testing.T) {
+// TestAskUserQuestionPostToolUseIsTelemetry 钉 2026-11-28 的协议修正：
+// PostToolUse 一律 tool_finished 遥测，不再收卡。历史实现在这里重派生
+// approval_id——但 Claude Code 的 PostToolUse tool_input 带上了用户答案，
+// 与 PreToolUse 不同源，重派生必得幽灵 id（真机 WAL 三例全错位，真卡一张
+// 没收）。收卡统一由 gateway 的 tool_use_id 关联对账负责（gateway_test 钉）。
+func TestAskUserQuestionPostToolUseIsTelemetry(t *testing.T) {
 	pre := askIn()
-	ev, err := Adapter{}.Normalize(pre, "dv_1", 1_000, config.ApprovalModePermissionRequest, true)
-	if err != nil || ev == nil {
+	if _, err := (Adapter{}).Normalize(pre, "dv_1", 1_000, config.ApprovalModePermissionRequest, true); err != nil {
 		t.Fatalf("Normalize(PreToolUse): %v", err)
 	}
+	// 关键：Post 的 tool_input 与 Pre 不同源（Claude Code 注入了 answers）。
 	post := pre
 	post.HookEventName = "PostToolUse"
-	closeEv, err := Adapter{}.Normalize(post, "dv_1", 1_100, config.ApprovalModePermissionRequest, true)
-	if err != nil || closeEv == nil {
+	post.ToolInput = json.RawMessage(`{"questions":[{"question":"q","header":"h","options":[{"label":"a"}]}],"answers":{"q":"a"}}`)
+	telemetry, err := Adapter{}.Normalize(post, "dv_1", 1_100, config.ApprovalModePermissionRequest, true)
+	if err != nil || telemetry == nil {
 		t.Fatalf("Normalize(PostToolUse): %v", err)
 	}
-	if closeEv.Envelope.Type != wire.EventApprovalClosed {
-		t.Fatalf("答完应收卡,得 type=%q", closeEv.Envelope.Type)
+	if telemetry.Envelope.Type != wire.EventToolFinished {
+		t.Fatalf("PostToolUse 应是纯遥测,得 type=%q", telemetry.Envelope.Type)
 	}
-	if closeEv.Envelope.ApprovalID != ev.Envelope.ApprovalID {
-		t.Fatalf("approval_id 必须与提问事件一致: %q vs %q",
-			closeEv.Envelope.ApprovalID, ev.Envelope.ApprovalID)
-	}
-	if closeEv.Envelope.Payload.StatusText != wire.CloseReasonCancelled {
-		t.Fatalf("收场原因应为 cancelled(终端已答),得 %q", closeEv.Envelope.Payload.StatusText)
-	}
-	if wantEventID := "close-" + ev.Envelope.ApprovalID; closeEv.Envelope.EventID != wantEventID {
-		t.Fatalf("event_id 应可去重: 得 %q 期望 %q", closeEv.Envelope.EventID, wantEventID)
-	}
-	if err := closeEv.Envelope.Validate(); err != nil {
-		t.Fatalf("收卡事件未通过协议校验: %v", err)
-	}
-
-	// 缺 tool_use_id 无法同源派生 → 回落 tool_finished 遥测,不瞎发 close
-	post.ToolUseID = ""
-	fallback, err := Adapter{}.Normalize(post, "dv_1", 1_100, config.ApprovalModePermissionRequest, true)
-	if err != nil || fallback == nil || fallback.Envelope.Type != wire.EventToolFinished {
-		t.Fatalf("缺 tool_use_id 应回落遥测,得 %+v err=%v", fallback, err)
+	if telemetry.Envelope.Type == wire.EventApprovalClosed {
+		t.Fatal("PostToolUse 不得再发 approval_closed(幽灵 id 源头)")
 	}
 }
 

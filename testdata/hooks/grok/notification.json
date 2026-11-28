@@ -1,0 +1,8 @@
+{
+  "hookEventName": "notification",
+  "sessionId": "grk-9c2d41ab55e74f10",
+  "cwd": "/tmp/proj-x",
+  "workspaceRoot": "/tmp/proj-x",
+  "notificationType": "permission_prompt",
+  "message": "Grok wants to run Bash: npm test"
+}

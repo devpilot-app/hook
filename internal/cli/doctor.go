@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devpilot-app/hook/internal/agent"
 	"github.com/devpilot-app/hook/internal/config"
 )
 
@@ -60,8 +61,25 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		checks = append(checks, checkRelayHealth(cfg))
 	}
 
-	checks = append(checks, checkHooks("claude"), checkHooks("codex"))
-	checks = append(checks, checkOpenCodePlugin())
+	// 逐档案检查全部 hooks 型 agent(未安装只 warn 不 fail——缺席不破坏
+	// 其余链路);闸门型 agent 追加启动参数提示。
+	for _, name := range agent.Names() {
+		if name == "opencode" {
+			checks = append(checks, checkOpenCodePlugin())
+			continue
+		}
+		checks = append(checks, checkHooks(name))
+		if prof, ok := agent.Lookup(name); ok && prof.GateOnly && prof.LaunchHint != "" {
+			mode := config.ApprovalModePermissionRequest
+			if cfg != nil {
+				mode = config.ApprovalMode(cfg.ApprovalMode)
+			}
+			if mode == config.ApprovalModePreToolUse {
+				checks = append(checks, checkResult{"gate." + name, "warn",
+					"gate mode needs `devpilot-hook hook " + name + " --gate` entries; launch the agent with `" + prof.LaunchHint + "`"})
+			}
+		}
+	}
 	checks = append(checks, checkQueue(paths))
 
 	failed := false
@@ -166,7 +184,7 @@ func checkHooks(agentName string) checkResult {
 	if err != nil {
 		return checkResult{"hooks." + agentName, "warn", "not installed (" + path + ")"}
 	}
-	if !strings.Contains(string(data), hookMarker+" "+agentName) {
+	if !containsAnyMarker(data, agentName) {
 		return checkResult{"hooks." + agentName, "warn", "devpilot-hook entry not found in agent config"}
 	}
 	return checkResult{"hooks." + agentName, "ok", path}

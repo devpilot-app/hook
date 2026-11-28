@@ -90,7 +90,7 @@ esac
 cat <<EOF
 
 Next steps:
-  ${BIN} install            # write hooks config for Claude Code / Codex
+  ${BIN} install            # write hooks config for the coding agents you use (see README: 8 agents supported)
   ${BIN} service install    # set up auto-start service (launchd / systemd user)
   ${BIN} pair --relay https://relay.example.com
 EOF

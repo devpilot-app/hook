@@ -7,6 +7,5 @@
   "tool_name": "Bash",
   "tool_input": {
     "command": "git push --force origin main"
-  },
-  "tool_use_id": "toolu_01ABC"
+  }
 }

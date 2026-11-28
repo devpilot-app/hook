@@ -62,9 +62,17 @@ func TestClaudeEventMapping(t *testing.T) {
 	}
 }
 
-func TestClaudeApprovalIDDeterministic(t *testing.T) {
+// TestClaudePermissionRequestIDIsRandomWithoutToolUseID 钉 2026-11-28 真机
+// 取证：Claude Code 的 PermissionRequest 载荷不带 tool_use_id（fixture 已对
+// 齐真机），审批 id 落随机 uuidv7——这正是「终端答完无法同源派生收卡」的
+// 根因，收卡必须走 gateway 的 tool_use_id 关联对账。确定性只对带
+// tool_use_id 的 PreToolUse 通道成立（TestClaudePreToolUseApprovalIDDeterministic）。
+func TestClaudePermissionRequestIDIsRandomWithoutToolUseID(t *testing.T) {
 	ad := claude.Adapter{}
 	in := loadInput(t, "claude", "permission_request.json")
+	if in.ToolUseID != "" {
+		t.Fatalf("fixture 必须对齐真机（PermissionRequest 无 tool_use_id），得 %q", in.ToolUseID)
+	}
 	a, err := ad.Normalize(in, "dd_test", 1, config.ApprovalModePermissionRequest, false)
 	if err != nil {
 		t.Fatal(err)
@@ -73,8 +81,9 @@ func TestClaudeApprovalIDDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Envelope.ApprovalID == "" || a.Envelope.ApprovalID != b.Envelope.ApprovalID {
-		t.Fatalf("同一工具调用应得到相同 approval_id: %q vs %q", a.Envelope.ApprovalID, b.Envelope.ApprovalID)
+	// 无 tool_use_id：两次 hook 是两次独立审批，id 必须不同（随机兜底）。
+	if a.Envelope.ApprovalID == "" || a.Envelope.ApprovalID == b.Envelope.ApprovalID {
+		t.Fatalf("无 tool_use_id 时 id 应随机独立: %q vs %q", a.Envelope.ApprovalID, b.Envelope.ApprovalID)
 	}
 	if a.Envelope.EventID == b.Envelope.EventID {
 		t.Fatal("每次 hook 的 event_id 应不同")

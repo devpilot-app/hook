@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "cop-3d81f7c2aa64",
+  "cwd": "/tmp/proj-x",
+  "transcript_path": "/Users/eric/.copilot/sessions/3d81f7c2aa64.jsonl",
+  "stop_reason": "end_turn",
+  "stop_hook_active": false
+}

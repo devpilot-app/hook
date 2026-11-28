@@ -1,0 +1,12 @@
+{
+  "conversation_id": "cur-77e10a2d94f8",
+  "generation_id": "gen-5501",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "2026.11.22",
+  "workspace_roots": ["/tmp/proj-x"],
+  "transcript_path": "/Users/eric/.cursor/projects/cur-77e10a2d94f8.jsonl",
+  "cwd": "/tmp/proj-x",
+  "tool_name": "Shell",
+  "tool_input": {"command": "npm install"},
+  "tool_use_id": "tu_91ba77"
+}

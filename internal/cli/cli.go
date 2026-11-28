@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/devpilot-app/hook/internal/agent"
 	"github.com/devpilot-app/hook/internal/config"
 )
 
@@ -55,14 +56,14 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `devpilot-hook - local hook daemon for DevPilot
 
 usage:
-  devpilot-hook install    [--agent claude,codex,opencode] [--approval-mode permission-request|pre-tool-use] [--dir PATH]
-  devpilot-hook uninstall  [--agent claude,codex,opencode] [--purge] [--dir PATH]
+  devpilot-hook install    [--agent claude,codex,qwen,gemini,grok,cursor,copilot,opencode] [--approval-mode permission-request|pre-tool-use] [--dir PATH]
+  devpilot-hook uninstall  [--agent ...] [--purge] [--dir PATH]
   devpilot-hook pair       [--relay https://relay.example.com] [--no-qr] [--dir PATH]
   devpilot-hook unpair     [--dir PATH]
   devpilot-hook serve      [--dir PATH] [--foreground]
   devpilot-hook doctor     [--json] [--dir PATH]
   devpilot-hook service    install|uninstall|status [--dir PATH]
-  devpilot-hook hook       claude|codex|opencode   (invoked from agent config, reads stdin)
+  devpilot-hook hook       [--gate] <agent>   (invoked from agent config, reads stdin)
   devpilot-hook version
 `)
 }
@@ -89,18 +90,23 @@ func homeFile(parts ...string) (string, error) {
 	return filepath.Join(append([]string{home}, parts...)...), nil
 }
 
-// parseAgents 解析逗号分隔的 agent 列表。
+// parseAgents 解析逗号分隔的 agent 列表。白名单 = agent 档案表
+// (agent.Names(),opencode 是插件形态也在此列)。
 func parseAgents(s string) ([]string, error) {
+	known := make(map[string]bool, 8)
+	for _, n := range agent.Names() {
+		known[n] = true
+	}
 	var out []string
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
-		switch part {
-		case "":
+		switch {
+		case part == "":
 			continue
-		case "claude", "codex", "opencode":
+		case known[part]:
 			out = append(out, part)
 		default:
-			return nil, fmt.Errorf("unknown agent: %s (only claude, codex and opencode are supported)", part)
+			return nil, fmt.Errorf("unknown agent: %s (supported: %s)", part, strings.Join(agent.Names(), ", "))
 		}
 	}
 	if len(out) == 0 {

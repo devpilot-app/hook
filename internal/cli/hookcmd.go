@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devpilot-app/apns/pkg/wire"
+	"github.com/devpilot-app/hook/internal/adapters"
 	"github.com/devpilot-app/hook/internal/agent"
 	"github.com/devpilot-app/hook/internal/config"
 )
@@ -33,25 +36,30 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var dir string
+	var gate bool
 	pathsFlag(fs, &dir)
+	// --gate 由安装器写进命令行(pre-tool-use 模式的闸门型 agent):
+	// 客户端不读配置也知道自己是闸门——配置/token 损坏时照样 fail-closed。
+	fs.BoolVar(&gate, "gate", false, "gate mode: fail closed (deny) when the daemon is unreachable")
 	if err := fs.Parse(args); err != nil {
 		return 0 // 绝不因为参数问题破坏 Agent
 	}
-	if fs.NArg() != 1 || (fs.Arg(0) != "claude" && fs.Arg(0) != "codex" && fs.Arg(0) != "opencode") {
+	// 位置参数必须在 flags 之后(flag 包在首个位置参数处停表)。
+	if fs.NArg() != 1 {
 		return 0
 	}
 	agentName := fs.Arg(0)
+	profile, ok := agent.Lookup(agentName)
+	if !ok {
+		return 0
+	}
 
-	paths, err := resolvePaths(dir)
-	if err != nil {
-		return 0
-	}
-	cfg, err := config.Load(paths)
-	if err != nil {
-		return 0
-	}
-	token, err := os.ReadFile(paths.TokenPath())
-	if err != nil {
+	// Grok 会自动读 ~/.claude/settings.json 的 hooks(CC 兼容层):我们的
+	// Claude 条目会在 Grok 会话里被触发。非 grok 通道 + Grok 环境变量在场
+	// = 这次调用来自 Grok 的兼容层,静默退出——事件由 ~/.grok/hooks/ 里的
+	// 自家条目以 agent=grok 正确上报,这里多报一份只会归属错乱。
+	if agentName != "grok" &&
+		(os.Getenv("GROK_HOOK_EVENT") != "" || os.Getenv("GROK_SESSION_ID") != "") {
 		return 0
 	}
 
@@ -59,20 +67,51 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 0
 	}
+	// 先归一化(stdin → 规范事件名/工具名),闸门判定与 tmux 探测都用它。
+	in, parseErr := agent.ParseInputAs(agentName, body)
+
+	// 闸门 fail-closed:--gate + 规范事件为 PreToolUse + 可变工具(解析
+	// 失败按可变处理)时,任何失败路径都输出 deny——yolo/always-approve
+	// 下没有原生弹窗兜底,空响应等于放行。只读工具与其余事件保持静默
+	// 放行(读不到文件是灾难,拦读是更大的灾难)。
+	gateEligible := gate && (parseErr != nil ||
+		(in.HookEventName == "PreToolUse" && profile.IsMutating(in.ToolName)))
+	deny := func() int {
+		if !gateEligible {
+			return 0
+		}
+		if out, err := adapterDeny(agentName, in); err == nil && len(out) > 0 {
+			_, _ = stdout.Write(append(out, '\n'))
+		}
+		return 0
+	}
+
+	paths, err := resolvePaths(dir)
+	if err != nil {
+		return deny()
+	}
+	cfg, err := config.Load(paths)
+	if err != nil {
+		return deny()
+	}
+	token, err := os.ReadFile(paths.TokenPath())
+	if err != nil {
+		return deny()
+	}
 
 	base := statusURL(cfg)
 	if override := os.Getenv("DEVPILOT_HOOK_GATEWAY"); override != "" {
 		base = strings.TrimRight(override, "/")
 	}
-	// CLAUDE_PROJECT_DIR 是会话启动时的项目根，Claude Code 把它导出给 hook
-	// 进程且整个会话不变；hook 输入里的 cwd 会跟随 Claude 的 `cd`（官方文档
-	// 明示）。标题与会话归属以前者为准，所以每个事件都带给网关。
-	projectDir := strings.TrimSpace(os.Getenv("CLAUDE_PROJECT_DIR"))
+	// 会话项目根由各 agent 档案的环境变量导出(CLAUDE_PROJECT_DIR /
+	// GEMINI_PROJECT_DIR / GEMINI_WORKSPACE_ROOT 等),整个会话不变;
+	// hook 输入里的 cwd 会跟随 agent 的 cd,标题与会话归属以前者为准。
+	projectDir := profile.ProjectDir(os.Getenv)
 	ctx, cancel := context.WithTimeout(context.Background(), hookClientTimeout(cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/hook/"+agentName, bytes.NewReader(body))
 	if err != nil {
-		return 0
+		return deny()
 	}
 	req.Header.Set("Authorization", "Bearer "+string(token))
 	req.Header.Set("Content-Type", "application/json")
@@ -91,15 +130,29 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0
+		return deny()
 	}
 	defer resp.Body.Close()
 
 	// 只有明确的 200 才输出决策；其余一律无输出，让 Agent 走原生流程。
+	// 闸门事件的 204 = 网关没登记成闸门(模式不一致等配置漂移),按
+	// fail-closed 处理。
 	if resp.StatusCode == http.StatusOK {
 		_, _ = io.Copy(stdout, resp.Body)
+		return 0
 	}
-	return 0
+	return deny()
+}
+
+// adapterDeny 生成该 agent 闸门模式的拒绝输出:直接复用适配器的
+// RenderDecision,与网关的 deny 响应逐字一致(单一事实源,杜绝两处
+// JSON 形状漂移)。适配器缺失(未注册)时不输出。
+func adapterDeny(agentName string, in agent.Input) ([]byte, error) {
+	adapter, ok := adapters.All()[wire.Agent(agentName)]
+	if !ok {
+		return nil, fmt.Errorf("adapters: no adapter for %s", agentName)
+	}
+	return adapter.RenderDecision("PreToolUse", wire.DecisionDeny, "", in.ToolName, in.ToolInput)
 }
 
 // tmuxInfo 是一次探测取回的 tmux 定位:会话名 + 窗口号(v0.3.1) + 窗格 id。
@@ -147,7 +200,9 @@ type tmuxInfo struct {
 //     项目根」即可恢复归属(paneByProject)。全落空 = 真不在 tmux
 //     附近,不带 header,网关按无会话处理(宁缺毋滥)。
 func tmuxProbe(body []byte, cfg *config.Config, agentName, projectDir string) tmuxInfo {
-	in, err := agent.ParseInput(body)
+	// 事件名已按 agent 档案归一化(Gemini Notification → PermissionRequest
+	// 等),白名单只认六规范名,对新 agent 自动生效。
+	in, err := agent.ParseInputAs(agentName, body)
 	if err != nil {
 		return tmuxInfo{}
 	}
@@ -293,10 +348,14 @@ func paneIDColumn(parts []string, idx int) string {
 // ——pane_current_command 在 macOS tmux 上报的是可执行文件 basename
 // (claude 装在 versions/2.1.325 时报 "2.1.325"),且同目录裸 zsh 也会
 // 被 cwd 命中,只有 argv0 可靠。
-func paneByProject(ctx context.Context, projectRoot, agent, sessionID string) tmuxInfo {
+func paneByProject(ctx context.Context, projectRoot, agentName, sessionID string) tmuxInfo {
 	target := normalizeProjPath(projectRoot)
-	if target == "" || strings.TrimSpace(agent) == "" {
+	if target == "" || strings.TrimSpace(agentName) == "" {
 		return tmuxInfo{} // 线索缺位无从归属,不猜
+	}
+	prof, ok := agent.Lookup(agentName)
+	if !ok {
+		return tmuxInfo{} // 未登记的 agent 无进程指纹,不猜
 	}
 	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F",
 		"#{session_name}\t#{window_index}\t#{pane_current_path}\t#{window_active}\t#{session_attached}\t#{window_activity}\t#{pane_pid}\t#{pane_id}").Output()
@@ -306,7 +365,7 @@ func paneByProject(ctx context.Context, projectRoot, agent, sessionID string) tm
 	candidates := parsePaneProjectRows(string(out), target)
 	var sessionHits, agentHits []paneProjectRow
 	for _, row := range candidates {
-		switch paneSubtreeMatch(ctx, row.pid, agent, sessionID) {
+		switch paneSubtreeMatch(ctx, row.pid, prof, sessionID) {
 		case subtreeSession:
 			sessionHits = append(sessionHits, row)
 		case subtreeAgent:
@@ -402,17 +461,20 @@ const sessionIDMinLen = 8
 type subtreeMatch int
 
 const (
-	subtreeNone   subtreeMatch = iota // 子树里没有 agent
-	subtreeAgent                      // 有 agent,但无会话级证据
-	subtreeSession                    // agent 进程 argv 含事件 session id = 本会话的 attach 视图,最强归属
+	subtreeNone    subtreeMatch = iota // 子树里没有 agent
+	subtreeAgent                       // 有 agent,但无会话级证据
+	subtreeSession                     // agent 进程 argv 含事件 session id = 本会话的 attach 视图,最强归属
 )
 
 // paneSubtreeMatch 终验 pane 的身份:pane_pid 是外壳(zsh),agent 跑在
 // 它的进程子树里——ps 全表建 ppid→children 映射,从 pane_pid 限深下溯:
-// 任一 agent 节点 argv 全文含 session id → subtreeSession(claude attach
-// <id> 形态,唯一归属);仅 argv0 basename 等值 → subtreeAgent(防
-// `claude-router` 前缀子串误中)。ps 失败 = 取证不可得 → 保守淘汰。
-func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) subtreeMatch {
+// 任一进程 argv 全文含 session id → subtreeSession(claude attach <id>
+// 形态,唯一归属);仅进程指纹命中 → subtreeAgent。指纹判定见
+// matchesAgentProfile:argv0 basename 或任一 token basename 命中档案的
+// ProcessNames(node shim `node /usr/local/bin/gemini`),或代码类路径
+// token 命中 PathHints(npm 布局 @google/gemini-cli/dist/index.js 的
+// basename 是 index.js,只能靠段)。ps 失败 = 取证不可得 → 保守淘汰。
+func paneSubtreeMatch(ctx context.Context, rootPID string, prof agent.Profile, sessionID string) subtreeMatch {
 	root, err := strconv.ParseInt(strings.TrimSpace(rootPID), 10, 64)
 	if err != nil || root <= 0 {
 		return subtreeNone
@@ -425,9 +487,9 @@ func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) sub
 	if err != nil {
 		return subtreeNone
 	}
-	argv0 := make(map[int64]string)
 	fullArgs := make(map[int64]string)
 	children := make(map[int64][]int64)
+	agentLike := make(map[int64]bool)
 	for line := range strings.SplitSeq(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
@@ -438,8 +500,9 @@ func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) sub
 		if errPID != nil || errPPID != nil {
 			continue
 		}
-		argv0[pid] = f[2]
-		fullArgs[pid] = strings.Join(f[2:], " ")
+		args := f[2:]
+		fullArgs[pid] = strings.Join(args, " ")
+		agentLike[pid] = matchesAgentProfile(args, prof)
 		children[ppid] = append(children[ppid], pid)
 	}
 	type frame struct {
@@ -455,7 +518,7 @@ func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) sub
 		if cur.depth > paneSubtreeMaxDepth {
 			continue
 		}
-		if filepath.Base(argv0[cur.pid]) == agent {
+		if agentLike[cur.pid] {
 			isAgent = true
 			if sessionID != "" && strings.Contains(fullArgs[cur.pid], sessionID) {
 				return subtreeSession
@@ -472,6 +535,46 @@ func paneSubtreeMatch(ctx context.Context, rootPID, agent, sessionID string) sub
 		return subtreeAgent
 	}
 	return subtreeNone
+}
+
+// matchesAgentProfile 判一行 ps 参数是否是 agent 进程:
+//  1. 任一 token 的 basename 精确 ∈ ProcessNames(argv0 裸名 / 全路径、
+//     node shim 的第二 token);
+//  2. 含 `/` 的代码类路径 token 命中 PathHints(仅认 .js/.mjs/.cjs/.ts
+//     结尾或 /bin/ 段——`vim ~/.grok/config.toml` 这类普通文件引用不算);
+//  3. 不含 `/` 的裸 token 不参与 hint 匹配(`vim claude.md` 不误报)。
+func matchesAgentProfile(args []string, prof agent.Profile) bool {
+	for _, tok := range args {
+		base := filepath.Base(tok)
+		for _, name := range prof.ProcessNames {
+			if base == name {
+				return true
+			}
+		}
+		if !strings.Contains(tok, "/") {
+			continue
+		}
+		if !looksLikeCodePath(tok) {
+			continue
+		}
+		for _, hint := range prof.PathHints {
+			if strings.Contains(tok, hint) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// looksLikeCodePath 判 token 是否是代码/可执行路径(排除「顺带提到
+// agent 目录的普通文件」误报)。
+func looksLikeCodePath(tok string) bool {
+	for _, ext := range []string{".js", ".mjs", ".cjs", ".ts"} {
+		if strings.HasSuffix(tok, ext) {
+			return true
+		}
+	}
+	return strings.Contains(tok, "/bin/")
 }
 
 // convergePaneRows 收敛唯一归属(纯函数,测试钉):active > attached >
